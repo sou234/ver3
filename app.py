@@ -223,7 +223,8 @@ def fetch_statcounter_data(metric="search_engine", device="desktop+mobile+tablet
         response = requests.get(base_url, params=params, headers=headers, verify=False)
         if response.status_code == 200:
             df = pd.read_csv(io.StringIO(response.text))
-            df['Date'] = pd.to_datetime(df['Date'])
+            # 날짜를 YYYY-MM 형식의 문자열로 변환
+            df['Date'] = pd.to_datetime(df['Date']).dt.strftime('%Y-%m')
             df.set_index('Date', inplace=True)
             return df
         else:
