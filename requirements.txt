@@ -10,3 +10,4 @@ feedparser
 openpyxl
 curl-cffi
 lxml
+matplotlib

@@ -169,19 +169,183 @@ THEME_KR_QUERIES = {
 # 데이터 로딩
 hot_narratives = fetch_narrative_data()
 
+@st.cache_data(ttl=86400)
+def fetch_statcounter_data(metric="search_engine", device="desktop+mobile+tablet+console", region="ww", from_year="2019", from_month="01"):
+    """StatCounter 데이터 수집 (CSV Direct)"""
+    import requests
+    import io
+    from datetime import datetime
+    
+    now = datetime.now()
+    to_year = now.year
+    to_month = now.month
+    
+    base_url = "https://gs.statcounter.com/chart.php"
+    
+    # device 파라미터 처리
+    # device_hidden 값 설정 (StatCounter는 device_hidden을 주로 사용)
+    device_val = device
+    
+    # metric 설정
+    if metric == "search_engine":
+        stat_type_hidden = "search_engine"
+        stat_type_label = "Search Engine"
+    elif metric == "os":
+        stat_type_hidden = "os_combined"
+        stat_type_label = "OS Market Share"
+    elif metric == "browser":
+        stat_type_hidden = "browser"
+        stat_type_label = "Browser"
+        
+    params = {
+        "device": device, # Label text but utilizing same val for simplicity or need map? 
+        # Actually StatCounter url uses 'device' param for label and 'device_hidden' for value.
+        # But 'device' param in getting csv might be loose. Let's use correct hidden val.
+        "device_hidden": device_val, 
+        "multi-device": "true",
+        "statType_hidden": stat_type_hidden,
+        "region_hidden": region,
+        "granularity": "monthly",
+        "statType": stat_type_label,
+        "region": "Worldwide",
+        "fromInt": f"{from_year}{from_month}",
+        "toInt": f"{to_year}{to_month:02d}",
+        "fromMonthYear": f"{from_year}-{from_month}",
+        "toMonthYear": f"{to_year}-{to_month:02d}",
+        "csv": "1"
+    }
+    
+    headers = {
+        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36"
+    }
+    
+    try:
+        response = requests.get(base_url, params=params, headers=headers, verify=False)
+        if response.status_code == 200:
+            df = pd.read_csv(io.StringIO(response.text))
+            df['Date'] = pd.to_datetime(df['Date'])
+            df.set_index('Date', inplace=True)
+            return df
+        else:
+            return pd.DataFrame()
+    except Exception as e:
+        st.error(f"데이터 수집 중 오류: {e}")
+        return pd.DataFrame()
+
+def process_search_engine_data(df):
+    """Google, Bing, Yahoo, Other 4파전으로 정리"""
+    if df.empty:
+        return df
+        
+    # CSV header might be 'bing' or 'Bing', 'Yahoo!' or 'Yahoo'
+    cols = df.columns
+    
+    # Bing 이름 확인
+    bing_col = 'bing' if 'bing' in cols else 'Bing'
+    # Yahoo 이름 확인
+    yahoo_col = 'Yahoo!' if 'Yahoo!' in cols else 'Yahoo'
+    
+    final_targets = ['Google', bing_col, yahoo_col]
+    
+    # 존재하는 컬럼만 선택
+    valid_targets = [c for c in final_targets if c in cols]
+    
+    # Other 계산
+    other_cols = [c for c in cols if c not in valid_targets]
+    
+    df_processed = df[valid_targets].copy()
+    if other_cols:
+        df_processed['Other'] = df[other_cols].sum(axis=1)
+    
+    # 이름 통일
+    rename_map = {}
+    if yahoo_col in df_processed.columns:
+        rename_map[yahoo_col] = 'Yahoo'
+    if bing_col in df_processed.columns:
+        rename_map[bing_col] = 'Bing'
+        
+    if rename_map:
+        df_processed.rename(columns=rename_map, inplace=True)
+        
+    # 요청된 순서로 정렬: Google, Yahoo, Other, Bing
+    desired_order = ['Google', 'Yahoo', 'Other', 'Bing']
+    # 실제 존재하는 컬럼만 필터링하여 순서 적용
+    final_order = [c for c in desired_order if c in df_processed.columns]
+    
+    return df_processed[final_order]
+
 # ---------------------------------------------------------
 # 3. 사이드바 구성
 # ---------------------------------------------------------
 with st.sidebar:
     st.title("🍊 Mirae Asset")
     st.subheader("Daily Market Briefing")
-    st.caption("Ver 5.1 - Narrative & Impact")
+    st.caption("Ver 5.2 - Global Insights")
     st.markdown("---")
     
-    menu = st.radio("메뉴 선택", ["📰 데일리 마켓 내러티브", "🔍 기업 펀더멘털 스카우터", "⚔️ ETF 운용사 배틀", "📊 타임폴리오 ETF 분석"])
+    menu = st.radio("메뉴 선택", ["📰 데일리 마켓 내러티브", "📈 글로벌 점유율 트래커", "🔍 기업 펀더멘털 스카우터", "⚔️ ETF 운용사 배틀", "📊 타임폴리오 ETF 분석"])
     
     if st.button("🔄 데이터 새로고침"):
         st.cache_data.clear()
+
+if menu == "📈 글로벌 점유율 트래커":
+    st.header("📈 Global Market Share Tracker")
+    st.caption("StatCounter Data (Google, Bing, Yahoo, Other)")
+    
+    tab1, tab2, tab3 = st.tabs(["🖥️+📱 Desktop & Mobile", "🖥️ Desktop", "📱 Mobile"])
+    
+    # 1. Desktop + Mobile (Combined)
+    with tab1:
+        st.subheader("Global Search Engine M/S (Desktop + Mobile)")
+        df = fetch_statcounter_data("search_engine", device="desktop+mobile+tablet+console")
+        df_proc = process_search_engine_data(df)
+        
+        if not df_proc.empty:
+            # 막대 차트 (Stacked Bar)
+            fig = px.bar(df_proc, title="Search Engine M/S (Total)", barmode='stack', 
+                         color_discrete_map={'Google': '#4285F4', 'Bing': '#00A4EF', 'Yahoo': '#7B0099', 'Other': '#999999'})
+            
+            # Y축 스케일 조정 (비율 파악 용이하도록)
+            y_min = df_proc['Google'].min() - 5
+            if y_min < 0: y_min = 0
+            fig.update_layout(yaxis_range=[y_min, 100], legend=dict(orientation="h", yanchor="top", y=-0.2, xanchor="center", x=0.5))
+            
+            st.plotly_chart(fig, use_container_width=True)
+            st.dataframe(df_proc.sort_index(ascending=False).style.format("{:.1f}%").background_gradient(cmap="Reds", subset=["Google"]), use_container_width=True)
+
+    # 2. Desktop
+    with tab2:
+        st.subheader("Global Search Engine M/S (Desktop Only)")
+        df = fetch_statcounter_data("search_engine", device="desktop")
+        df_proc = process_search_engine_data(df)
+        
+        if not df_proc.empty:
+            fig = px.bar(df_proc, title="Search Engine M/S (Desktop)", barmode='stack',
+                         color_discrete_map={'Google': '#4285F4', 'Bing': '#00A4EF', 'Yahoo': '#7B0099', 'Other': '#999999'})
+            
+            y_min = df_proc['Google'].min() - 5
+            if y_min < 0: y_min = 0
+            fig.update_layout(yaxis_range=[y_min, 100], legend=dict(orientation="h", yanchor="top", y=-0.2, xanchor="center", x=0.5))
+
+            st.plotly_chart(fig, use_container_width=True)
+            st.dataframe(df_proc.sort_index(ascending=False).style.format("{:.1f}%").background_gradient(cmap="Reds", subset=["Google"]), use_container_width=True)
+
+    # 3. Mobile
+    with tab3:
+        st.subheader("Global Search Engine M/S (Mobile Only)")
+        df = fetch_statcounter_data("search_engine", device="mobile")
+        df_proc = process_search_engine_data(df)
+        
+        if not df_proc.empty:
+            fig = px.bar(df_proc, title="Search Engine M/S (Mobile)", barmode='stack',
+                         color_discrete_map={'Google': '#4285F4', 'Bing': '#00A4EF', 'Yahoo': '#7B0099', 'Other': '#999999'})
+            
+            y_min = df_proc['Google'].min() - 5
+            if y_min < 0: y_min = 0
+            fig.update_layout(yaxis_range=[y_min, 100], legend=dict(orientation="h", yanchor="top", y=-0.2, xanchor="center", x=0.5))
+
+            st.plotly_chart(fig, use_container_width=True)
+            st.dataframe(df_proc.sort_index(ascending=False).style.format("{:.1f}%").background_gradient(cmap="Reds", subset=["Google"]), use_container_width=True)
 
 # ---------------------------------------------------------
 # 4. 메인 화면
