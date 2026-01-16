@@ -839,4 +839,3 @@ elif menu == "📊 타임폴리오 실시간 PDF":
 
     st.markdown("---")
     st.link_button("🌐 공식 상세페이지 바로가기", f"https://timefolioetf.co.kr/m11_view.php?idx={target_idx}")
-
