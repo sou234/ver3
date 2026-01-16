@@ -286,7 +286,7 @@ with st.sidebar:
     st.caption("Ver 5.2 - Global Insights")
     st.markdown("---")
     
-    menu = st.radio("메뉴 선택", ["📰 Daily Market Narrative", "📈 Super-Stock", " TIMEFOLIO Analysis"])
+    menu = st.radio("메뉴 선택", ["📰 Daily Market Narrative", "📈 Super-Stock", "📊 TIMEFOLIO Analysis"])
     
     if st.button("🔄 데이터 새로고침"):
         st.cache_data.clear()
@@ -627,7 +627,7 @@ if menu == "📰 Daily Market Narrative":
 # 5. TIMEFOLIO Analysis
 # ---------------------------------------------------------
 
-elif menu == "📊 TIMEFOLIO Analysis":
+if menu == "📊 TIMEFOLIO Analysis":
     st.title("📊 TIMEFOLIO Official Portfolio & Rebalancing")
     
     etf_categories = {
