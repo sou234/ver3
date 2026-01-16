@@ -627,7 +627,7 @@ if menu == "📰 Daily Market Narrative":
 # 5. TIMEFOLIO Analysis
 # ---------------------------------------------------------
 
-elif menu == "📊 타임폴리오 실시간 PDF":
+elif menu == "📊 TIMEFOLIO Analysis":
     st.title("📊 TIMEFOLIO Official Portfolio & Rebalancing")
     
     etf_categories = {
