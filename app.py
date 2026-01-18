@@ -19,6 +19,21 @@ import plotly.graph_objects as go
 # 보안 인증서 경고 무시
 urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
 
+# [Fix] SSL Certificate Verify Failed Issue (for FinanceDataReader & KRX)
+import ssl
+try:
+    _create_unverified_https_context = ssl._create_unverified_context
+except AttributeError:
+    pass
+else:
+    ssl._create_default_https_context = _create_unverified_https_context
+
+# [Fix] Requests Session Verify Patch
+old_merge_environment_settings = requests.Session.merge_environment_settings
+def new_merge_environment_settings(self, url, proxies, stream, verify, cert):
+    return old_merge_environment_settings(self, url, proxies, stream, False, cert)
+requests.Session.merge_environment_settings = new_merge_environment_settings
+
 # 엑셀 다운로드용 함수
 def to_excel(df_new, df_inc, df_dec, df_all, date):
     output = BytesIO()
@@ -169,6 +184,58 @@ THEME_KR_QUERIES = {
 # 데이터 로딩
 hot_narratives = fetch_narrative_data()
 
+@st.cache_data(ttl=600)
+def get_kr_supply_demand():
+    """네이버 금융 투자자별 매매동향 (코스피 기준)"""
+    url = "https://finance.naver.com/sise/investor_deal_trend.naver"
+    try:
+        # Revert to standard requests with explicit verify=False
+        # Note: app.py has a global patch for requests, but we pass verify=False to be safe
+        response = requests.get(url, headers={'User-Agent': 'Mozilla/5.0'}, verify=False)
+        
+        soup = BeautifulSoup(response.text, 'html.parser')
+        
+        table = soup.select_one("table.type_1")
+        if not table:
+            return None
+
+        # 테이블 파싱
+        rows = table.find_all('tr')
+        data = []
+        
+        # 날짜, 개인, 외국인, 기관계 (코스피)
+        # 헤더: 날짜 | 개인 | 외국인 | 기관계 | 금융투자 | ...
+        # 보통 2번째 row부터 데이터, 하지만 구조가 복잡할 수 있으니 안전하게 class='date' 찾기
+        
+        for row in rows:
+            # 날짜 있는 행만 추출
+            date_col = row.find('td', class_='date')
+            if date_col:
+                cols = row.find_all('td')
+                # cols[0]: 날짜, cols[1]: 개인, cols[2]: 외국인, cols[3]: 기관계 (코스피 기준)
+                if len(cols) > 4:
+                    date_str = cols[0].text.strip()
+                    personal = cols[1].text.strip()
+                    foreigner = cols[2].text.strip()
+                    institution = cols[3].text.strip()
+                    
+                    data.append({
+                        "날짜": date_str,
+                        "개인": personal,
+                        "외국인": foreigner,
+                        "기관": institution
+                    })
+                    
+        if data:
+            df = pd.DataFrame(data)
+            # 최근 5일치만
+            return df.head(5)
+        return None
+            
+    except Exception as e:
+        print(f"Error crawling supply: {e}")
+        return None
+
 @st.cache_data(ttl=86400)
 def fetch_statcounter_data(metric="search_engine", device="desktop+mobile+tablet+console", region="ww", from_year="2019", from_month="01", to_year=None, to_month=None):
     """StatCounter 데이터 수집 (CSV Direct)"""
@@ -286,7 +353,7 @@ with st.sidebar:
     st.caption("Ver 5.2 - Global Insights")
     st.markdown("---")
     
-    menu = st.radio("메뉴 선택", ["📰 Daily Market Narrative", "📈 Super-Stock", "📊 TIMEFOLIO Analysis"])
+    menu = st.radio("메뉴 선택", ["📰 Daily Market Narrative", "📈 Super-Stock", "📊 TIMEFOLIO Analysis", "🗺️ Global Market Map"])
     
     if st.button("🔄 데이터 새로고침"):
         st.cache_data.clear()
@@ -651,7 +718,9 @@ if menu == "📊 TIMEFOLIO Analysis":
     
     target_idx = etf_categories[cat][name]
     
-    if st.button("데이터 분석 및 리밸런싱 요약"):
+    if st.button("데이터 분석 및 리밸런싱 요약") or st.session_state.get(f"analysis_active_{target_idx}", False):
+        st.session_state[f"analysis_active_{target_idx}"] = True
+
         with st.spinner(f"'{name}' 데이터를 수집 및 분석 중입니다..."):
             try:
                 # ActiveETFMonitor 초기화
@@ -753,40 +822,43 @@ if menu == "📊 TIMEFOLIO Analysis":
 
                     with tab3:
                         st.markdown("##### 📋 전체 포트폴리오 구성")
-                else:
-                    # 분석 실패 시 기본 탭
-                    st.subheader("📋 전체 포트폴리오 구성")
-
-                # 전체 리스트 및 차트 (공통)
-                col_chart, col_list = st.columns([1, 1])
+                # 전체 리스트 및 차트
+                st.subheader("📋 전체 포트폴리오 구성")
                 
-                with col_chart:
-                    # 파이 차트용 데이터 준비
+                c_chart, c_list = st.columns([1, 1])
+                
+                with c_chart:
+                    # 도넛 차트 복원
                     chart_df = df_today.copy()
                     chart_df['비중'] = pd.to_numeric(chart_df['비중'], errors='coerce')
-                    chart_df.loc[chart_df['비중'] < 1.0, '종목명'] = '기타' # 1% 미만 기타 처리
                     
-                    fig = px.pie(chart_df, values="비중", names="종목명", hole=0.4, title="포트폴리오 비중",
-                                color_discrete_sequence=px.colors.qualitative.Set3)
-                    st.plotly_chart(fig, use_container_width=True)
-
-                # --- [신규 기능 3] 트리맵 (히트맵) ---
-                with tab3:
-                    st.markdown("##### 🗺️ 포트폴리오 히트맵")
-                    # 트리맵용 데이터 준비 (현금 제외)
-                    tree_df = df_today[df_today['종목명'] != '현금'].copy()
-                    if not tree_df.empty:
-                        # 색상을 위한 등락폭 데이터가 있다면 좋겠지만, 지금은 비중 크기로만 시각화
-                        # 추후 etf_monitor.py에서 등락률까지 가져오면 color='등락률' 적용 가능
-                        fig_tree = px.treemap(tree_df, path=['종목명'], values='비중',
-                                             color='비중', color_continuous_scale='Viridis',
-                                             title=f"{name} 보유 종목 맵 (Size=비중)")
-                        fig_tree.update_traces(textinfo="label+value+percent entry")
-                        st.plotly_chart(fig_tree, use_container_width=True)
+                    # Top 5 외에는 '기타'로 묶기
+                    chart_df = chart_df.sort_values('비중', ascending=False)
+                    if len(chart_df) > 5:
+                        top5 = chart_df.iloc[:5]
+                        others = chart_df.iloc[5:]
+                        others_sum = others['비중'].sum()
+                        others_row = pd.DataFrame([{'종목명': '기타', '비중': others_sum}])
+                        final_chart_df = pd.concat([top5, others_row], ignore_index=True)
                     else:
-                        st.info("시각화할 데이터가 없습니다.")
+                        final_chart_df = chart_df
 
-                    st.markdown("##### 📋 전체 포트폴리오 구성")
+                    fig = px.pie(final_chart_df, values="비중", names="종목명", hole=0.4, title="포트폴리오 비중", color_discrete_sequence=px.colors.qualitative.Set3)
+                    fig.update_traces(textinfo='percent+label')
+                    st.plotly_chart(fig, use_container_width=True)
+                
+                with c_list:
+                    # 전체 데이터 표시 (심플 테이블)
+                    df_all = df_today[['종목명', '비중']].copy()
+                    df_all['비중'] = pd.to_numeric(df_all['비중'], errors='coerce')
+                    df_all = df_all.sort_values('비중', ascending=False)
+                    
+                    # 인덱스 1부터 시작 (순위)
+                    df_all.index = range(1, len(df_all) + 1)
+                    
+                    # 비중 포맷팅하여 표시
+                    st.dataframe(df_all.style.format({'비중': '{:.2f}%'}), use_container_width=True)
+
 
                 # --- [신규 기능 2] 엑셀 다운로드 ---
                 st.markdown("---")
@@ -814,9 +886,16 @@ if menu == "📊 TIMEFOLIO Analysis":
                     history_df = monitor.load_history(days=30)
                     
                     if not history_df.empty:
-                        # 종목 선택
+                        # 종목 선택 (Session State 활용하여 선택 유지)
                         all_stocks = sorted(history_df['종목명'].unique())
-                        selected_stock = st.selectbox("분석할 종목을 선택하세요", all_stocks, index=0)
+                        
+                        # Session state 키 생성
+                        sel_key = "history_selected_stock"
+                        if sel_key not in st.session_state:
+                            st.session_state[sel_key] = all_stocks[0]
+                            
+                        # Selectbox with key
+                        selected_stock = st.selectbox("분석할 종목을 선택하세요", all_stocks, key=sel_key)
                         
                         # 선택 종목 데이터 필터링
                         stock_history = history_df[history_df['종목명'] == selected_stock].sort_values('날짜')
@@ -828,10 +907,6 @@ if menu == "📊 TIMEFOLIO Analysis":
                     else:
                         st.info("누적된 히스토리 데이터가 아직 없습니다. 매일 데이터를 수집하면 차트가 활성화됩니다.")
                 
-                with col_list:
-                    # 간단한 리스트 출력 (상위 15개)
-                    top_df = df_today[['종목명', '비중', '수량']].head(15)
-                    st.dataframe(top_df.style.format({'비중': '{:.2f}%', '수량': '{:,}'}), use_container_width=True)
 
             except Exception as e:
                 st.error(f"데이터 처리 중 오류가 발생했습니다: {e}")
