@@ -4,37 +4,62 @@ import plotly.express as px
 import FinanceDataReader as fdr
 import requests
 import urllib3
-from io import BytesIO
-from bs4 import BeautifulSoup
+from io import StringIO, BytesIO
 from datetime import datetime, timedelta
-import pytz
-import feedparser
-from etf import ActiveETFMonitor
 import yfinance as yf
-from curl_cffi import requests as curequests
-import re
-from collections import Counter
-import plotly.graph_objects as go
+import feedparser
+import numpy as np
+import pytz
+
+# [필수] 같은 폴더의 etf.py에서 클래스 임포트
+try:
+    from etf import ActiveETFMonitor
+except ImportError:
+    st.error("⚠️ 'etf.py' 파일이 없습니다. 같은 폴더에 넣어주세요.")
+    st.stop()
 
 # 보안 인증서 경고 무시
 urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
 
-# [Fix] SSL Certificate Verify Failed Issue (for FinanceDataReader & KRX)
-import ssl
-try:
-    _create_unverified_https_context = ssl._create_unverified_context
-except AttributeError:
-    pass
-else:
-    ssl._create_default_https_context = _create_unverified_https_context
+# ---------------------------------------------------------
+# 1. 페이지 설정
+# ---------------------------------------------------------
+st.set_page_config(
+    page_title="MAS Strategy Dashboard",
+    page_icon="🍊",
+    layout="wide",
+    initial_sidebar_state="expanded"
+)
 
-# [Fix] Requests Session Verify Patch
-old_merge_environment_settings = requests.Session.merge_environment_settings
-def new_merge_environment_settings(self, url, proxies, stream, verify, cert):
-    return old_merge_environment_settings(self, url, proxies, stream, False, cert)
-requests.Session.merge_environment_settings = new_merge_environment_settings
+# ---------------------------------------------------------
+# 2. 데이터 수집 및 유틸리티 함수
+# ---------------------------------------------------------
 
-# 엑셀 다운로드용 함수
+@st.cache_data(ttl=600)
+def fetch_market_data():
+    """시장 핵심 지표 수집"""
+    tickers = {
+        "KOSPI": "^KS11", "S&P500": "^GSPC", "Nasdaq": "^IXIC", 
+        "USD/KRW": "KRW=X", "US 10Y": "^TNX", "WTI Oil": "CL=F"
+    }
+    data_dict = {}
+    history_dict = {}
+    
+    for name, code in tickers.items():
+        try:
+            obj = yf.Ticker(code)
+            hist = obj.history(period="1y")
+            if not hist.empty:
+                current = hist['Close'].iloc[-1]
+                prev = hist['Close'].iloc[-2]
+                pct_change = ((current - prev) / prev) * 100
+                hist['MA20'] = hist['Close'].rolling(window=20).mean()
+                trend = "상승" if current > hist['MA20'].iloc[-1] else "하락"
+                data_dict[name] = {"price": current, "pct_change": pct_change, "trend": trend}
+                history_dict[name] = hist
+        except: continue
+    return data_dict, history_dict
+
 def to_excel(df_new, df_inc, df_dec, df_all, date):
     output = BytesIO()
     with pd.ExcelWriter(output, engine='openpyxl') as writer:
@@ -42,199 +67,70 @@ def to_excel(df_new, df_inc, df_dec, df_all, date):
         df_inc.to_excel(writer, index=False, sheet_name='비중확대')
         df_dec.to_excel(writer, index=False, sheet_name='비중축소')
         df_all.to_excel(writer, index=False, sheet_name='전체포트폴리오')
-    processed_data = output.getvalue()
-    return processed_data
+    return output.getvalue()
 
-# ---------------------------------------------------------
-# 1. 페이지 설정
-# ---------------------------------------------------------
-st.set_page_config(
-    page_title="MAS Market Narrative V5.0",
-    page_icon="🍊",
-    layout="wide"
-)
-
-# ---------------------------------------------------------
-# 2. 데이터 수집 로직 (테마/내러티브 중심)
-# ---------------------------------------------------------
-
-# 주요 테마와 대표 자산(Proxy) 매핑
-MARKET_THEMES = {
-    "🤖 AI & 반도체 혁명": {"ticker": "NVDA", "name": "Nvidia", "query": "Nvidia AI semiconductor stock"},
-    "⚡ 전기차/2차전지 캐즘": {"ticker": "TSLA", "name": "Tesla", "query": "Tesla EV battery stock"},
-    "🏛️ 미 연준(Fed) & 금리": {"ticker": "^TNX", "name": "미국채 10년물", "query": "Federal Reserve interest rate bond yield"},
-    "🇨🇳 중국/이머징 마켓": {"ticker": "FXI", "name": "China Large-Cap", "query": "China economy stimulus stock market"},
-    "🪙 크립토/디지털자산": {"ticker": "BTC-USD", "name": "Bitcoin", "query": "Bitcoin crypto regulation price"},
-    "🛢️ 에너지/지정학 리스크": {"ticker": "CL=F", "name": "WTI 유가", "query": "Oil price Middle East war energy"},
-    "💊 비만치료제/바이오": {"ticker": "LLY", "name": "Eli Lilly", "query": "Eli Lilly weight loss drug stock"},
-    "🇰🇷 한국 증시 (대표)": {"ticker": "^KS11", "name": "KOSPI", "query": "KOSPI Korea stock market"}
-}
-
-@st.cache_data(ttl=600)
-def fetch_narrative_data():
-    """테마별 대표 자산의 등락률을 계산하여 '오늘의 핫 토픽' 선정"""
-    narratives = []
-    
-    session = curequests.Session(impersonate="chrome")
-    session.verify = False
-
-    for theme, info in MARKET_THEMES.items():
-        try:
-            ticker = info['ticker']
-            stock = yf.Ticker(ticker, session=session)
-            # 최근 5일치 가져와서 전일비 비교 (휴장일 고려 안전하게)
-            hist = stock.history(period="5d")
-            
-            if len(hist) >= 2:
-                current = hist['Close'].iloc[-1]
-                prev = hist['Close'].iloc[-2]
-                change = current - prev
-                pct = (change / prev) * 100
-                
-                narratives.append({
-                    "theme": theme,
-                    "proxy": info['name'],
-                    "ticker": ticker,
-                    "price": current,
-                    "pct_change": pct,
-                    "query": info['query'],
-                    "history": hist['Close'] # 차트용
-                })
-        except Exception:
-            continue
-            
-    # 등락률 절댓값 기준 정렬 (시장을 가장 크게 움직인 테마 순)
-    narratives.sort(key=lambda x: abs(x['pct_change']), reverse=True)
-    return narratives
-
-@st.cache_data(ttl=1800)
-def fetch_news_headline(query, lang='en'):
-    """구글 뉴스 RSS에서 뉴스 수집 (언어 선택 가능)"""
+@st.cache_data(ttl=3600)
+def fetch_global_events():
+    """전체 시장 핵심 이벤트 수집 (Global Market Radar)"""
+    # 광범위한 시장 키워드
+    query = "stock market live updates Fed CPI inflation earnings report when:7d"
     encoded = requests.utils.quote(query)
-    if lang == 'en':
-        url = f"https://news.google.com/rss/search?q={encoded}&hl=en-US&gl=US&ceid=US:en"
-    else:
-        url = f"https://news.google.com/rss/search?q={encoded}&hl=ko&gl=KR&ceid=KR:ko"
-        
-    try:
-        feed = feedparser.parse(url)
-        items = []
-        for e in feed.entries[:2]:
-            items.append({"title": e.title, "link": e.link, "source": e.source.title if hasattr(e, 'source') else "News", "lang": lang})
-        return items
-    except:
-        return []
-
-@st.cache_data(ttl=1800)
-def fetch_country_briefing(country_code):
-    """국가별 핵심 재료 뉴스 헤드라인 Top 5 추출 (요약 형태)"""
+    url = f"https://news.google.com/rss/search?q={encoded}&hl=en-US&gl=US&ceid=US:en"
     
-    # 🔍 Catalyst Search Queries
-    if country_code == 'US':
-        query = "Earnings OR Awarded OR Launched OR Unveiled OR Acquisition OR FDA OR Regulation"
-        encoded = requests.utils.quote(query)
-        url = f"https://news.google.com/rss/search?q={encoded}+when:1d&hl=en-US&gl=US&ceid=US:en"
-        
-    elif country_code == 'KR':
-        query = "실적 OR 수주 OR 체결 OR 개발 OR 출시 OR 승인 OR 정책 OR 공시"
-        encoded = requests.utils.quote(query)
-        url = f"https://news.google.com/rss/search?q={encoded}+when:1d&hl=ko&gl=KR&ceid=KR:ko"
-        
-    elif country_code == 'CN':
-        query = "China Stimulus OR China Restriction OR China EV OR China Tech"
-        encoded = requests.utils.quote(query)
-        url = f"https://news.google.com/rss/search?q={encoded}+when:1d&hl=en-US&gl=US&ceid=US:en"
-    else:
-        return []
-
     try:
         feed = feedparser.parse(url)
-        briefings = []
-        seen_titles = set()
-        
-        for e in feed.entries:
-            # 제목 전처리: 언론사명 제거 및 길이 제한
-            title = re.sub(r'\s*-[^-]*$', '', e.title)
-            title = title.strip()
-            
-            # 중복 제거 (유사 제목 필터링)
-            if title not in seen_titles and len(title) > 10:
-                briefings.append({"title": title, "link": e.link})
-                seen_titles.add(title)
-                
-            if len(briefings) >= 5: # Top 5만 추출
-                break
-                
-        return briefings
+        news_items = []
+        for e in feed.entries[:5]: # Top 5
+            news_items.append({
+                "title": e.title,
+                "link": e.link,
+                "published": e.published,
+                "source": e.source.title if hasattr(e, 'source') else "News"
+            })
+        return news_items
     except:
         return []
 
-# 테마별 한국어 쿼리 매핑
-THEME_KR_QUERIES = {
-    "🤖 AI & 반도체 혁명": "엔비디아 반도체 AI 주가",
-    "⚡ 전기차/2차전지 캐즘?": "테슬라 전기차 배터리 주가",
-    "🏛️ 미 연준(Fed) & 금리": "미국 연준 금리 채권",
-    "🇨🇳 중국/이머징 마켓": "중국 경기부양책 증시",
-    "🪙 크립토/디지털자산": "비트코인 가상화폐 시세 규제",
-    "🛢️ 에너지/지정학 리스크": "국제유가 중동 전쟁 에너지",
-    "💊 비만치료제/바이오": "일라이릴리 비만치료제 바이오주",
-    "🇰🇷 한국 증시 (대표)": "코스피 한국 증시 전망"
-}
-
-# 데이터 로딩
-hot_narratives = fetch_narrative_data()
-
-@st.cache_data(ttl=600)
-def get_kr_supply_demand():
-    """네이버 금융 투자자별 매매동향 (코스피 기준)"""
-    url = "https://finance.naver.com/sise/investor_deal_trend.naver"
+@st.cache_data(ttl=3600)
+def fetch_ib_news(bank_name):
+    """주요 IB들의 최신 마켓 코멘트 수집 (Google News RSS)"""
+    # 검색어 최적화: "BankName market outlook 2025" or "BankName stock strategy" relative to last 30 days
+    query = f"{bank_name} market outlook strategy forecast when:30d"
+    encoded = requests.utils.quote(query)
+    url = f"https://news.google.com/rss/search?q={encoded}&hl=en-US&gl=US&ceid=US:en"
+    
     try:
-        # Revert to standard requests with explicit verify=False
-        # Note: app.py has a global patch for requests, but we pass verify=False to be safe
-        response = requests.get(url, headers={'User-Agent': 'Mozilla/5.0'}, verify=False)
-        
-        soup = BeautifulSoup(response.text, 'html.parser')
-        
-        table = soup.select_one("table.type_1")
-        if not table:
-            return None
+        feed = feedparser.parse(url)
+        news_items = []
+        for e in feed.entries[:3]: # 최신 3개만
+            news_items.append({
+                "title": e.title,
+                "link": e.link,
+                "published": e.published,
+                "source": e.source.title if hasattr(e, 'source') else "News"
+            })
+        return news_items
+    except:
+        return []
 
-        # 테이블 파싱
-        rows = table.find_all('tr')
-        data = []
+def get_news_tags(title):
+    """뉴스 제목 기반 태그 생성 (NLP-lite)"""
+    title_lower = title.lower()
+    tags = []
+    
+    # 1. Momentum (Positive)
+    if any(k in title_lower for k in ["upgrade", "buy", "bull", "overweight", "raise", "top pick", "growth", "positive", "hike"]):
+        tags.append(("🚀 Momentum", "#FFEAEA", "#FF0000")) # Text, BG, Color
         
-        # 날짜, 개인, 외국인, 기관계 (코스피)
-        # 헤더: 날짜 | 개인 | 외국인 | 기관계 | 금융투자 | ...
-        # 보통 2번째 row부터 데이터, 하지만 구조가 복잡할 수 있으니 안전하게 class='date' 찾기
+    # 2. Risk (Negative)
+    if any(k in title_lower for k in ["downgrade", "sell", "bear", "underweight", "cut", "risk", "warn", "negative", "slow", "recession"]):
+        tags.append(("⚠️ Risk", "#EAEFFF", "#0000FF"))
         
-        for row in rows:
-            # 날짜 있는 행만 추출
-            date_col = row.find('td', class_='date')
-            if date_col:
-                cols = row.find_all('td')
-                # cols[0]: 날짜, cols[1]: 개인, cols[2]: 외국인, cols[3]: 기관계 (코스피 기준)
-                if len(cols) > 4:
-                    date_str = cols[0].text.strip()
-                    personal = cols[1].text.strip()
-                    foreigner = cols[2].text.strip()
-                    institution = cols[3].text.strip()
-                    
-                    data.append({
-                        "날짜": date_str,
-                        "개인": personal,
-                        "외국인": foreigner,
-                        "기관": institution
-                    })
-                    
-        if data:
-            df = pd.DataFrame(data)
-            # 최근 5일치만
-            return df.head(5)
-        return None
-            
-    except Exception as e:
-        print(f"Error crawling supply: {e}")
-        return None
+    # 3. Key Event (Neutral/Impact)
+    if any(k in title_lower for k in ["fed", "rate", "cpi", "inflation", "earnings", "policy", "meeting", "tech", "ai "]):
+        tags.append(("📢 Event", "#F2F2F2", "#333333"))
+        
+    return tags
 
 @st.cache_data(ttl=86400)
 def fetch_statcounter_data(metric="search_engine", device="desktop+mobile+tablet+console", region="ww", from_year="2019", from_month="01", to_year=None, to_month=None):
@@ -344,20 +240,140 @@ def process_search_engine_data(df):
     
     return df_processed[final_order]
 
+# 데이터 로드
+macro_metrics, macro_histories = fetch_market_data()
+
 # ---------------------------------------------------------
 # 3. 사이드바 구성
 # ---------------------------------------------------------
 with st.sidebar:
     st.title("🍊 Mirae Asset")
-    st.subheader("Daily Market Briefing")
-    st.caption("Ver 5.2 - Global Insights")
+    st.subheader("고객자산배분본부")
+    st.caption("Strategy Dashboard V4.1")
     st.markdown("---")
     
-    menu = st.radio("메뉴 선택", ["📰 Daily Market Narrative", "📈 Super-Stock", "📊 TIMEFOLIO Analysis"])
+    menu = st.radio("메뉴 선택", [
+        "📰 Daily Market Narrative", 
+        "📈 Super-Stock",
+        "📊 TIMEFOLIO Analysis"
+    ])
     
-    if st.button("🔄 데이터 새로고침"):
+    if st.button("🔄 새로고침"):
         st.cache_data.clear()
+        st.rerun()
 
+# ---------------------------------------------------------
+# 4. 메인 화면 로직
+# ---------------------------------------------------------
+
+# [TAB 1] Daily Market Narrative (모닝 미팅용)
+if menu == "📰 Daily Market Narrative":
+    st.title("📰 Daily Market Narrative")
+    st.markdown("### ☕ Morning Meeting Board")
+    st.info("오늘의 시장 환경을 점검하고, 유니버스 테마의 리밸런싱 전략을 논의하는 공간입니다.")
+
+    # 1. Macro Environment (시장 환경 점검)
+    st.markdown("#### 1. Macro Environment (시장 분위기)")
+    cols = st.columns(6)
+    
+    # 핵심 지표 나열
+    indicators = ["KOSPI", "S&P500", "Nasdaq", "USD/KRW", "US 10Y", "WTI Oil"]
+    for i, key in enumerate(indicators):
+        if key in macro_metrics:
+            with cols[i]:
+                d = macro_metrics[key]
+                color = "normal" if d['pct_change'] >= 0 else "inverse"
+                st.metric(key, f"{d['price']:,.2f}", f"{d['pct_change']:.2f}%", delta_color=color)
+
+
+    st.markdown("---")
+
+    # 1.5 Global Market Event Radar (New Feature)
+    st.markdown("#### 🚨 Global Market Event Radar (Key Events)")
+    st.info("🌐 이번 주 시장을 움직이는 핵심 매크로 이벤트 & 뉴스")
+    
+    global_events = fetch_global_events()
+    if global_events:
+        for n in global_events:
+            # 날짜 포맷팅
+            try:
+                dt = datetime.strptime(n['published'], "%a, %d %b %Y %H:%M:%S %Z")
+                date_str = dt.strftime("%Y-%m-%d %H:%M")
+            except:
+                date_str = ""
+            
+            # 태그 분석
+            tags = get_news_tags(n['title'])
+            tag_html = ""
+            for t_text, t_bg, t_col in tags:
+                tag_html += f"<span style='background-color:{t_bg}; color:{t_col}; padding: 2px 6px; border-radius: 4px; font-size: 11px; margin-right: 4px; font-weight: bold;'>{t_text}</span>"
+            
+            # 카드 스타일 (조금 더 강조된 디자인)
+            st.markdown(f"""
+            <div style="padding: 12px; border-left: 4px solid #FF5050; background-color: #fff; box-shadow: 0 1px 3px rgba(0,0,0,0.1); margin-bottom: 10px;">
+                <a href="{n['link']}" target="_blank" style="text-decoration: none; color: #111; font-weight: bold; font-size: 15px;">{n['title']}</a>
+                <br><div style="margin-top: 6px;">{tag_html} <span style="color: #666; font-size: 12px;">{n['source']} | {date_str}</span></div>
+            </div>
+            """, unsafe_allow_html=True)
+    else:
+        st.write("현재 감지된 주요 이벤트가 없습니다.")
+
+    st.markdown("---")
+
+    # 2. Global IB House View (대체된 기능)
+    st.markdown("#### 2. Global IB House View (Wall St. Insight)")
+    st.info("💡 월가 주요 투자은행(IB)들의 최신 시장 전망 및 전략 리포트 요약")
+
+    ib_banks = {
+        "JP Morgan": "https://upload.wikimedia.org/wikipedia/commons/thumb/0/07/J_P_Morgan_Chase_Logo_2008_1.svg/1200px-J_P_Morgan_Chase_Logo_2008_1.svg.png",
+        "Goldman Sachs": "https://upload.wikimedia.org/wikipedia/commons/thumb/6/61/Goldman_Sachs.svg/1200px-Goldman_Sachs.svg.png",
+        "Morgan Stanley": "https://upload.wikimedia.org/wikipedia/commons/thumb/3/34/Morgan_Stanley_Logo_1.svg/1200px-Morgan_Stanley_Logo_1.svg.png"
+    }
+    
+    cols = st.columns(3)
+    for i, (bank, logo_url) in enumerate(ib_banks.items()):
+        with cols[i]:
+            st.markdown(f"**🏦 {bank}**")
+            # st.image(logo_url, width=100) # 로고는 링크 깨질 수 있으므로 텍스트로 대체하거나 유지
+            
+            news = fetch_ib_news(bank)
+            if news:
+                for n in news:
+                    # 날짜 포맷팅 깔끔하게
+                    try:
+                        dt = datetime.strptime(n['published'], "%a, %d %b %Y %H:%M:%S %Z")
+                        date_str = dt.strftime("%Y-%m-%d")
+                    except:
+                        date_str = ""
+                    
+                    # 태그 분석
+                    tags = get_news_tags(n['title'])
+                    tag_html = ""
+                    for t_text, t_bg, t_col in tags:
+                        tag_html += f"<span style='background-color:{t_bg}; color:{t_col}; padding: 2px 6px; border-radius: 4px; font-size: 11px; margin-right: 4px; font-weight: bold;'>{t_text}</span>"
+                        
+                    st.markdown(f"""
+                    <div style="padding: 10px; border: 1px solid #e0e0e0; border-radius: 5px; margin-bottom: 10px; background-color: #f9f9f9;">
+                        <a href="{n['link']}" target="_blank" style="text-decoration: none; color: #333; font-weight: bold; font-size: 14px;">{n['title']}</a>
+                        <br><div style="margin-top: 4px;">{tag_html} <span style="color: #666; font-size: 12px;">{n['source']} | {date_str}</span></div>
+                    </div>
+                    """, unsafe_allow_html=True)
+            else:
+                st.caption("최신 관련 뉴스가 없습니다.")
+
+    st.markdown("---")
+
+    # 3. Discussion & Action Plan (회의록 작성)
+    st.markdown("#### 3. Today's Action Plan (회의 기록)")
+    
+    c_memo1, c_memo2 = st.columns(2)
+    with c_memo1:
+        st.text_area("🗣️ Macro View & Issue", height=150, placeholder="예: 미 국채 금리 상승으로 인한 성장주 조정 가능성 논의...")
+    with c_memo2:
+        st.text_area("⚖️ Rebalancing Idea", height=150, placeholder="예: 'AI 반도체' 비중 유지하되, '2차전지' 비중 축소 의견 우세...")
+
+
+# [TAB 2] Super-Stock (StatCounter) - 팀장님 개인 업무
 if menu == "📈 Super-Stock":
     st.header("📈 Super-Stock (Global Market Share)")
     st.caption("Data Source: StatCounter Global Stats")
@@ -534,166 +550,8 @@ if menu == "📈 Super-Stock":
         else:
             st.error("데이터를 수집하지 못했습니다. 잠시 후 다시 시도해주세요.")
 
-# ---------------------------------------------------------
-# 4. 메인 화면
-# ---------------------------------------------------------
 
-if menu == "📰 Daily Market Narrative":
-    
-    st.title("📰 Daily Market Narrative")
-    st.markdown("""
-    단순한 지수 나열이 아닙니다.  
-    **"어제 무슨 이슈(Topic)가 있었고 ➡️ 그 결과 어떤 자산이 움직였는지(Impact)"** 인과관계를 중심으로 정리합니다.
-    """)
-    st.markdown("---")
-    
-    # [0] 글로벌 마켓 브리핑 (New Feature: Catalyst Summary)
-    with st.expander("🌍 Global Market Catalyst Briefing (US/KR/CN)", expanded=True):
-        st.markdown("각 국가별 시장을 움직이는 **핵심 재료(실적, 정책, 신기술)** 뉴스 요약입니다.")
-        c1, c2, c3 = st.columns(3)
-        
-        with c1:
-            st.markdown("#### 🇺🇸 United States")
-            brief_us = fetch_country_briefing('US')
-            if brief_us:
-                for item in brief_us:
-                    st.markdown(f"- [{item['title']}]({item['link']})")
-            else:
-                st.caption("데이터 수집 불가")
-                
-        with c2:
-            st.markdown("#### 🇰🇷 Korea")
-            brief_kr = fetch_country_briefing('KR')
-            if brief_kr:
-                for item in brief_kr:
-                    st.markdown(f"- [{item['title']}]({item['link']})")
-            else:
-                st.caption("데이터 수집 불가")
-                
-        with c3:
-            st.markdown("#### 🇨🇳 China (Market)")
-            brief_cn = fetch_country_briefing('CN')
-            if brief_cn:
-                for item in brief_cn:
-                    st.markdown(f"- [{item['title']}]({item['link']})")
-            else:
-                st.caption("데이터 수집 불가")
-
-    st.markdown("---")
-    
-    # [1] 오늘의 Top 3 이슈 카드 (상단 강조)
-    st.subheader("🔥 Today's Hot Issues (Top 3 Movers)")
-    
-    top_movers = hot_narratives[:3] if hot_narratives else []
-    
-    cols = st.columns(3)
-    for i, item in enumerate(top_movers):
-        with cols[i]:
-            # 스타일링: 상승(빨강) / 하락(파랑)
-            color = "red" if item['pct_change'] > 0 else "blue"
-            direction = "▲ 급등" if item['pct_change'] > 0 else "▼ 급락"
-            bg_color = "rgba(255, 0, 0, 0.1)" if item['pct_change'] > 0 else "rgba(0, 0, 255, 0.1)"
-            
-            # 카드 형태 디자인
-            st.info(f"**{item['theme']}**")
-            st.metric(
-                label=item['proxy'],
-                value=f"{item['price']:,.2f}",
-                delta=f"{item['pct_change']:+.2f}%",
-                delta_color="normal"
-            )
-            
-            # 미니 차트
-            st.line_chart(item['history'], height=80)
-            
-            # 뉴스 매핑 (왜 올랐나/내렸나?) - EN & KR
-            st.caption("📌 Global & Local Headlines")
-            
-            # English News
-            news_en = fetch_news_headline(item['query'], lang='en')
-            if news_en:
-                st.markdown(f"**🇺🇸 Global**: [{news_en[0]['title']}]({news_en[0]['link']})")
-                
-            # Korean News
-            kr_query = THEME_KR_QUERIES.get(item['theme'], item['theme'])
-            news_kr = fetch_news_headline(kr_query, lang='ko')
-            if news_kr:
-                st.markdown(f"**🇰🇷 Korea**: [{news_kr[0]['title']}]({news_kr[0]['link']})")
-
-    st.markdown("---")
-
-    # [2] 전체 테마별 상세 브리핑 (리스트 뷰)
-    st.subheader("📋 Sector & Theme Impact Report (EN vs KR)")
-    
-    # 탭으로 상승/하락 이슈 구분
-    tab_rise, tab_fall = st.tabs(["🚀 상승 모멘텀 (Bullish)", "💧 하락 리스크 (Bearish)"])
-    
-    with tab_rise:
-        risers = [n for n in hot_narratives if n['pct_change'] > 0]
-        if risers:
-            for item in risers:
-                with st.expander(f"**{item['theme']}**: {item['proxy']} (+{item['pct_change']:.2f}%)", expanded=True):
-                    c1, c2, c3 = st.columns([1.2, 1.2, 0.6])
-                    
-                    # English News
-                    with c1:
-                        st.markdown(f"#### 🇺🇸 Global Perspective")
-                        news_en = fetch_news_headline(item['query'], lang='en')
-                        for n in news_en:
-                            st.success(f"**{n['source']}**: [{n['title']}]({n['link']})")
-
-                    # Korean News
-                    with c2:
-                        st.markdown(f"#### 🇰🇷 Domestic View")
-                        kr_query = THEME_KR_QUERIES.get(item['theme'], item['theme'])
-                        news_kr = fetch_news_headline(kr_query, lang='ko')
-                        for n in news_kr:
-                            st.success(f"**{n['source']}**: [{n['title']}]({n['link']})")
-
-                    with c3:
-                        st.markdown(f"#### 📈 Price Action")
-                        st.line_chart(item['history'])
-        else:
-            st.write("오늘 눈에 띄게 상승한 주요 테마가 없습니다.")
-
-    with tab_fall:
-        fallers = [n for n in hot_narratives if n['pct_change'] <= 0]
-        if fallers:
-            for item in fallers:
-                with st.expander(f"**{item['theme']}**: {item['proxy']} ({item['pct_change']:.2f}%)", expanded=True):
-                    c1, c2, c3 = st.columns([1.2, 1.2, 0.6])
-                    
-                    # English News
-                    with c1:
-                        st.markdown(f"#### 🇺🇸 Global Perspective")
-                        news_en = fetch_news_headline(item['query'], lang='en')
-                        for n in news_en:
-                            st.error(f"**{n['source']}**: [{n['title']}]({n['link']})")
-                            
-                    # Korean News
-                    with c2:
-                        st.markdown(f"#### 🇰🇷 Domestic View")
-                        kr_query = THEME_KR_QUERIES.get(item['theme'], item['theme'])
-                        news_kr = fetch_news_headline(kr_query, lang='ko')
-                        for n in news_kr:
-                            st.error(f"**{n['source']}**: [{n['title']}]({n['link']})")
-                            
-                    with c3:
-                        st.markdown(f"#### 📉 Price Action")
-                        st.line_chart(item['history'])
-        else:
-            st.write("오늘 눈에 띄게 하락한 주요 테마가 없습니다.")
-
-    st.markdown("---")
-    st.caption("*데이터: Yahoo Finance, Google News RSS")
-
-# ---------------------------------------------------------
-
-
-# ---------------------------------------------------------
-# 5. TIMEFOLIO Analysis
-# ---------------------------------------------------------
-
+# [TAB 3] TIMEFOLIO Analysis (경쟁사 분석)
 if menu == "📊 TIMEFOLIO Analysis":
     st.title("📊 TIMEFOLIO Official Portfolio & Rebalancing")
     
