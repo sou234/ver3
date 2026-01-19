@@ -69,31 +69,96 @@ def to_excel(df_new, df_inc, df_dec, df_all, date):
         df_all.to_excel(writer, index=False, sheet_name='전체포트폴리오')
     return output.getvalue()
 
+
+
+def fetch_yahoo_news(tickers):
+    """Yahoo Finance 뉴스 수집 (더 신뢰도 높은 소스)"""
+    news_items = []
+    try:
+        # 여러 티커를 한 번에 처리
+        for ticker in tickers:
+            stock = yf.Ticker(ticker)
+            news = stock.news
+            if news:
+                for n in news:
+                    # YF 뉴스 구조: title, link, providerPublishTime, publisher
+                    pub_time = n.get('providerPublishTime', 0)
+                    dt = datetime.fromtimestamp(pub_time)
+                    
+                    news_items.append({
+                        "title": n.get('title', ''),
+                        "link": n.get('link', ''),
+                        "published_dt": dt,
+                        "published": dt.strftime("%Y-%m-%d %H:%M"),
+                        "source": f"Yahoo ({n.get('publisher', 'Unknown')})"
+                    })
+    except Exception as e:
+        # st.error(f"Yahoo News Error: {e}") # 디버깅용
+        pass
+        
+    return news_items
+
 @st.cache_data(ttl=3600)
 def fetch_global_events():
-    """전체 시장 핵심 이벤트 수집 (Global Market Radar)"""
+    """전체 시장 핵심 이벤트 수집 (Google News + Yahoo Finance)"""
+    market_news = []
+    
+    # 1. Yahoo Finance (신뢰오 소스 우선 - SPY, QQQ, NVDA)
+    market_news.extend(fetch_yahoo_news(["SPY", "QQQ", "^DJI"]))
+    
+    # 2. Google News (보조)
     # 광범위한 시장 키워드
-    query = "stock market live updates Fed CPI inflation earnings report when:7d"
+    query = "stock market live updates Fed CPI inflation earnings report when:3d"
     encoded = requests.utils.quote(query)
     url = f"https://news.google.com/rss/search?q={encoded}&hl=en-US&gl=US&ceid=US:en"
     
     try:
         feed = feedparser.parse(url)
-        news_items = []
-        for e in feed.entries[:5]: # Top 5
-            news_items.append({
+        for e in feed.entries:
+            # 날짜 파싱
+            if hasattr(e, 'published_parsed') and e.published_parsed:
+                dt = datetime(*e.published_parsed[:6])
+            else:
+                dt = datetime.now()
+
+            market_news.append({
                 "title": e.title,
                 "link": e.link,
                 "published": e.published,
+                "published_dt": dt, # 정렬용
                 "source": e.source.title if hasattr(e, 'source') else "News"
             })
-        return news_items
-    except:
-        return []
+    except: pass
+    
+    # 중복 제거 (Link 기준) & 정렬
+    seen_links = set()
+    unique_news = []
+    for n in market_news:
+        if n['link'] not in seen_links:
+            unique_news.append(n)
+            seen_links.add(n['link'])
+            
+    # 최신순 정렬
+    unique_news.sort(key=lambda x: x['published_dt'], reverse=True)
+    
+    return unique_news[:7] # Top 7 (야후 추가로 개수 늘림)
 
 @st.cache_data(ttl=3600)
 def fetch_ib_news(bank_name):
-    """주요 IB들의 최신 마켓 코멘트 수집 (Google News RSS)"""
+    """주요 IB들의 최신 마켓 코멘트 수집 (Google News + Yahoo Finance)"""
+    ib_news = []
+    
+    # 1. Yahoo Finance (티커 매핑)
+    ticker_map = {
+        "JP Morgan": "JPM",
+        "Goldman Sachs": "GS",
+        "Morgan Stanley": "MS"
+    }
+    
+    if bank_name in ticker_map:
+        ib_news.extend(fetch_yahoo_news([ticker_map[bank_name]]))
+
+    # 2. Google News RSS
     # 검색어 최적화: "BankName market outlook 2025" or "BankName stock strategy" relative to last 30 days
     query = f"{bank_name} market outlook strategy forecast when:30d"
     encoded = requests.utils.quote(query)
@@ -101,17 +166,36 @@ def fetch_ib_news(bank_name):
     
     try:
         feed = feedparser.parse(url)
-        news_items = []
-        for e in feed.entries[:3]: # 최신 3개만
-            news_items.append({
+        for e in feed.entries:
+            # 날짜 파싱
+            if hasattr(e, 'published_parsed') and e.published_parsed:
+                dt = datetime(*e.published_parsed[:6])
+            else:
+                dt = datetime.now()
+
+            ib_news.append({
                 "title": e.title,
                 "link": e.link,
                 "published": e.published,
+                "published_dt": dt,
                 "source": e.source.title if hasattr(e, 'source') else "News"
             })
-        return news_items
-    except:
-        return []
+    except: pass
+    
+    # 중복 제거 및 정렬
+    seen_titles = set()
+    unique_news = []
+    for n in ib_news:
+        # 제목이 너무 비슷하면 중복 처리 (간단한 로직)
+        title_summary = n['title'][:30]
+        if title_summary not in seen_titles:
+            unique_news.append(n)
+            seen_titles.add(title_summary)
+            
+    # 최신순 정렬
+    unique_news.sort(key=lambda x: x['published_dt'], reverse=True)
+    
+    return unique_news[:5] # Top 5
 
 def get_news_tags(title):
     """뉴스 제목 기반 태그 생성 (NLP-lite)"""
