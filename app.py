@@ -10,9 +10,12 @@ import yfinance as yf
 import feedparser
 import numpy as np
 import pytz
-import sqlite3
-from collections import defaultdict
-import math
+from wordcloud import WordCloud
+import matplotlib.pyplot as plt
+import plotly.express as px
+import seaborn as sns
+from collections import Counter
+import re
 
 # [필수] 같은 폴더의 etf.py에서 클래스 임포트
 try:
@@ -20,6 +23,12 @@ try:
 except ImportError:
     st.error("⚠️ 'etf.py' 파일이 없습니다. 같은 폴더에 넣어주세요.")
     st.stop()
+
+# [NEW] Earnings Logic Import
+try:
+    from logic_earnings import get_naver_consensus_change
+except ImportError:
+     pass # handling later
 
 # 보안 인증서 경고 무시 및 SSL 검증 우회 (Global Patch)
 urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
@@ -108,6 +117,52 @@ def fetch_yahoo_news(tickers):
     return news_items
 
 @st.cache_data(ttl=3600)
+def fetch_trending_tickers():
+    """Yahoo Finance Trending Tickers 가져오기"""
+    trending = []
+    try:
+        # Yahoo Finance Trending Endpoint (US Region)
+        url = "https://query1.finance.yahoo.com/v1/finance/trending/US?count=10"
+        headers = {'User-Agent': 'Mozilla/5.0'}
+        resp = requests.get(url, headers=headers, verify=False) # SSL false per user env
+        data = resp.json()
+        
+        result = data['finance']['result'][0]['quotes']
+        for item in result:
+             symbol = item['symbol']
+             trending.append(symbol)
+             
+    except Exception as e:
+        pass
+    return trending
+
+@st.cache_data(ttl=3600)
+def fetch_kdi_keywords():
+    """KDI 경제 정보 센터 - 경제 키워드 트렌드 크롤링"""
+    keywords = []
+    try:
+        url = "https://eiec.kdi.re.kr/bigdata/issueTrend.do"
+        headers = {'User-Agent': 'Mozilla/5.0'}
+        # KDI 사이트는 SSL 검증이 필요할 수 있으나, 사용자 환경 고려 False
+        resp = requests.get(url, headers=headers, verify=False)
+        html = resp.text
+        
+        # 정규식으로 [키워드](javascript:;) 패턴 추출
+        # 예: [원달러환율](javascript:;)
+        # 중복 제거를 위해 리스트 대신 집합 사용 후 다시 리스트로
+        found = re.findall(r'\[(.*?)\]\(javascript:;\)', html)
+        
+        # 순서 유지를 위해 dict.fromkeys 사용 (Python 3.7+)
+        keywords = list(dict.fromkeys(found))
+        
+        # 상위 20개만
+        return keywords[:20]
+        
+    except Exception as e:
+        # st.error(f"KDI Fetch Error: {e}")
+        return []
+
+@st.cache_data(ttl=3600)
 def fetch_global_events():
     """전체 시장 핵심 이벤트 수집 (Google News + Yahoo Finance)"""
     market_news = []
@@ -151,329 +206,6 @@ def fetch_global_events():
     unique_news.sort(key=lambda x: x['published_dt'], reverse=True)
     
     return unique_news[:7] # Top 7 (야후 추가로 개수 늘림)
-
-
-# =========================
-# KDI-style Issue Trend MVP
-# =========================
-
-ISSUE_DB_PATH = "issue_trend.db"
-
-# 자산배분 관점 이슈 세트 (MVP 12개)
-ISSUES = {
-    "물가/인플레": {
-        "kw": ["cpi", "pce", "inflation", "disinflation", "core", "headline", "prices", "물가", "인플레", "인플레이션", "근원"],
-        "asset_hint": ["채권", "환율", "주식"]
-    },
-    "금리/연준": {
-        "kw": ["fed", "fomc", "powell", "rate", "rates", "hike", "cut", "hold", "dot plot", "연준", "fomc", "파월", "기준금리", "금리인상", "금리인하", "동결"],
-        "asset_hint": ["채권", "주식", "환율"]
-    },
-    "채권/수익률": {
-        "kw": ["treasury", "ust", "yield", "10y", "2y", "curve", "spread", "duration", "국채", "미국채", "수익률", "일드커브", "커브", "스프레드", "듀레이션"],
-        "asset_hint": ["채권"]
-    },
-    "달러/환율": {
-        "kw": ["dollar", "dxy", "fx", "usd", "usdkrw", "eurusd", "yen", "yuan", "달러", "환율", "원달러", "외환", "강달러", "약달러"],
-        "asset_hint": ["환율"]
-    },
-    "유가/에너지": {
-        "kw": ["oil", "wti", "brent", "crude", "opec", "gas", "lng", "유가", "원유", "오펙", "감산", "증산", "천연가스", "lng"],
-        "asset_hint": ["원자재", "인플레"]
-    },
-    "원자재/금속": {
-        "kw": ["gold", "silver", "copper", "aluminum", "nickel", "lithium", "iron ore", "금", "은", "구리", "알루미늄", "니켈", "리튬", "철광석"],
-        "asset_hint": ["원자재"]
-    },
-    "경기/성장": {
-        "kw": ["gdp", "growth", "recession", "soft landing", "hard landing", "pmi", "ism", "unemployment", "jobs", "고용", "실업", "경기침체", "성장률", "pmi", "ism"],
-        "asset_hint": ["주식", "채권"]
-    },
-    "실적/어닝": {
-        "kw": ["earnings", "guidance", "revenue", "margin", "eps", "beats", "miss", "실적", "어닝", "가이던스", "매출", "마진", "eps", "서프라이즈"],
-        "asset_hint": ["주식"]
-    },
-    "AI/반도체": {
-        "kw": ["ai", "gpu", "semiconductor", "chip", "nvidia", "amd", "tsmc", "hbm", "ai", "반도체", "칩", "gpu", "엔비디아", "tsmc", "hbm"],
-        "asset_hint": ["주식"]
-    },
-    "중국/신흥국": {
-        "kw": ["china", "beijing", "yuan", "emerging", "중국", "위안", "신흥국", "부동산", "헝다", "부채"],
-        "asset_hint": ["환율", "원자재", "주식"]
-    },
-    "지정학/리스크": {
-        "kw": ["geopolitical", "sanction", "war", "conflict", "shipping", "strait", "iran", "israel", "ukraine", "지정학", "전쟁", "분쟁", "제재", "해운", "홍해"],
-        "asset_hint": ["원자재", "환율", "주식"]
-    },
-    "정책/규제": {
-        "kw": ["policy", "regulation", "tariff", "ban", "stimulus", "fiscal", "정책", "규제", "관세", "부양", "재정"],
-        "asset_hint": ["주식", "환율", "채권"]
-    }
-}
-
-STOPWORDS_ISSUE = set([
-    "the","a","an","and","or","to","of","in","on","for","with","as","at","by",
-    "from","after","before","today","live","update","updates",
-    "시장","미국","글로벌","이번","관련","속보","단독","분석","전망","가능","우려","발표"
-])
-
-def _norm_text(t: str) -> str:
-    t = (t or "").lower()
-    t = re.sub(r"<[^>]*>", " ", t)
-    t = re.sub(r"[^0-9a-zA-Z가-힣\s/\.%\-]", " ", t)
-    t = re.sub(r"\s+", " ", t).strip()
-    return t
-
-def init_issue_db():
-    con = sqlite3.connect(ISSUE_DB_PATH)
-    cur = con.cursor()
-    cur.execute("""
-    CREATE TABLE IF NOT EXISTS issue_windows (
-        window_start_kst TEXT NOT NULL,
-        window_end_kst   TEXT NOT NULL,
-        issue            TEXT NOT NULL,
-        mention_count    INTEGER NOT NULL,
-        top_terms        TEXT,
-        PRIMARY KEY (window_start_kst, window_end_kst, issue)
-    )
-    """)
-    cur.execute("""
-    CREATE TABLE IF NOT EXISTS issue_articles (
-        window_start_kst TEXT NOT NULL,
-        window_end_kst   TEXT NOT NULL,
-        issue            TEXT NOT NULL,
-        title            TEXT,
-        link             TEXT,
-        published_kst    TEXT,
-        source           TEXT
-    )
-    """)
-    con.commit()
-    con.close()
-
-@st.cache_resource
-def ensure_issue_db():
-    init_issue_db()
-    return True
-
-def floor_to_30m_kst(dt_kst: datetime) -> datetime:
-    m = (dt_kst.minute // 30) * 30
-    return dt_kst.replace(minute=m, second=0, microsecond=0)
-
-def score_issue(text: str, issue_name: str) -> int:
-    t = _norm_text(text)
-    score = 0
-    for kw in ISSUES[issue_name]["kw"]:
-        k = _norm_text(kw)
-        if not k or k in STOPWORDS_ISSUE:
-            continue
-        if k in t:
-            score += 1
-    return score
-
-def map_article_to_issue(title: str, summary: str = ""):
-    text = f"{title} {summary}"
-    t = _norm_text(text)
-    if not t or len(t) < 10:
-        return None, 0
-
-    best_issue = None
-    best_score = 0
-    for issue in ISSUES.keys():
-        sc = score_issue(t, issue)
-        if sc > best_score:
-            best_score = sc
-            best_issue = issue
-
-    if best_score < 2:
-        return None, best_score
-    return best_issue, best_score
-
-def fetch_issue_trend_items():
-    items = []
-    # Yahoo (기존 함수 재사용)
-    items.extend(fetch_yahoo_news(["SPY", "QQQ", "^DJI"]))
-
-    # Google RSS (폭 넓게)
-    query = (
-        "Fed OR FOMC OR CPI OR inflation OR yields OR dollar OR FX OR "
-        "oil OR OPEC OR recession OR GDP OR PMI OR earnings OR guidance OR AI OR semiconductor "
-        "when:3d"
-    )
-    url = f"https://news.google.com/rss/search?q={requests.utils.quote(query)}&hl=en-US&gl=US&ceid=US:en"
-    try:
-        feed = feedparser.parse(url)
-        for e in feed.entries[:150]:
-            title = getattr(e, "title", "")
-            link = getattr(e, "link", "")
-            if hasattr(e, "published_parsed") and e.published_parsed:
-                dt = datetime(*e.published_parsed[:6])
-            else:
-                dt = datetime.now()
-            items.append({
-                "title": title,
-                "link": link,
-                "published_dt": dt,
-                "source": e.source.title if hasattr(e, 'source') else "GoogleNews"
-            })
-    except:
-        pass
-
-    # 중복 제거 + 최신순
-    seen = set()
-    uniq = []
-    for it in items:
-        lk = it.get("link", "")
-        if not lk or lk in seen:
-            continue
-        seen.add(lk)
-        uniq.append(it)
-
-    uniq.sort(key=lambda x: x.get("published_dt", datetime.min), reverse=True)
-    return uniq
-
-def store_window_issue_stats(ws: str, we: str, issue_counts: dict, issue_top_terms: dict, issue_articles: dict):
-    con = sqlite3.connect(ISSUE_DB_PATH)
-    cur = con.cursor()
-
-    for issue, cnt in issue_counts.items():
-        top_terms = issue_top_terms.get(issue, "")
-        cur.execute("""
-            INSERT INTO issue_windows(window_start_kst, window_end_kst, issue, mention_count, top_terms)
-            VALUES (?, ?, ?, ?, ?)
-            ON CONFLICT(window_start_kst, window_end_kst, issue)
-            DO UPDATE SET mention_count=excluded.mention_count, top_terms=excluded.top_terms
-        """, (ws, we, issue, int(cnt), top_terms))
-
-    cur.execute("""
-        DELETE FROM issue_articles
-        WHERE window_start_kst=? AND window_end_kst=?
-    """, (ws, we))
-
-    for issue, rows in issue_articles.items():
-        for r in rows[:10]:
-            cur.execute("""
-                INSERT INTO issue_articles(window_start_kst, window_end_kst, issue, title, link, published_kst, source)
-                VALUES (?, ?, ?, ?, ?, ?, ?)
-            """, (ws, we, issue, r.get("title"), r.get("link"), r.get("published_kst"), r.get("source")))
-
-    con.commit()
-    con.close()
-
-def read_issue_windows(limit_windows=96):
-    con = sqlite3.connect(ISSUE_DB_PATH)
-    df = pd.read_sql_query("""
-        SELECT window_start_kst, window_end_kst, issue, mention_count, top_terms
-        FROM issue_windows
-        ORDER BY window_end_kst DESC
-        LIMIT ?
-    """, con, params=(limit_windows * len(ISSUES),))
-    con.close()
-    return df
-
-def read_issue_articles(ws: str, we: str, issue: str):
-    con = sqlite3.connect(ISSUE_DB_PATH)
-    df = pd.read_sql_query("""
-        SELECT title, link, published_kst, source
-        FROM issue_articles
-        WHERE window_start_kst=? AND window_end_kst=? AND issue=?
-        ORDER BY published_kst DESC
-        LIMIT 20
-    """, con, params=(ws, we, issue))
-    con.close()
-    return df
-
-def compute_current_window_issue_trend():
-    ensure_issue_db()
-
-    tz = pytz.timezone("Asia/Seoul")
-    now_kst = datetime.now(tz)
-    we_dt = floor_to_30m_kst(now_kst)
-    ws_dt = we_dt - timedelta(minutes=30)
-
-    ws = ws_dt.strftime("%Y-%m-%d %H:%M")
-    we = we_dt.strftime("%Y-%m-%d %H:%M")
-
-    items = fetch_issue_trend_items()
-
-    issue_counts = {k: 0 for k in ISSUES.keys()}
-    issue_terms = defaultdict(lambda: defaultdict(int))
-    issue_evidence = defaultdict(list)
-
-    for it in items:
-        dt = it.get("published_dt")
-        if not isinstance(dt, datetime):
-            continue
-
-        if dt.tzinfo is None:
-            dt_kst = tz.localize(dt)
-        else:
-            dt_kst = dt.astimezone(tz)
-
-        if not (ws_dt <= dt_kst < we_dt):
-            continue
-
-        title = it.get("title", "")
-        link = it.get("link", "")
-        src = it.get("source", "")
-
-        issue, sc = map_article_to_issue(title, "")
-        if issue is None:
-            continue
-
-        issue_counts[issue] += 1
-
-        tnorm = _norm_text(title)
-        for kw in ISSUES[issue]["kw"]:
-            k = _norm_text(kw)
-            if k and k in tnorm and k not in STOPWORDS_ISSUE:
-                issue_terms[issue][k] += 1
-
-        issue_evidence[issue].append({
-            "title": title,
-            "link": link,
-            "published_kst": dt_kst.strftime("%Y-%m-%d %H:%M"),
-            "source": src
-        })
-
-    issue_top_terms = {}
-    for issue, d in issue_terms.items():
-        top = sorted(d.items(), key=lambda x: x[1], reverse=True)[:5]
-        issue_top_terms[issue] = ", ".join([k for k, v in top])
-
-    store_window_issue_stats(ws, we, issue_counts, issue_top_terms, issue_evidence)
-    return ws, we
-
-def build_issue_rank(df_all: pd.DataFrame, current_we: str, lookback_windows=48):
-    cur = df_all[df_all["window_end_kst"] == current_we].copy()
-    if cur.empty:
-        return pd.DataFrame()
-
-    df = df_all.copy()
-    df["we_dt"] = pd.to_datetime(df["window_end_kst"])
-    cur_we_dt = pd.to_datetime(current_we)
-
-    past = df[(df["we_dt"] < cur_we_dt) & (df["we_dt"] >= cur_we_dt - pd.Timedelta(minutes=30*lookback_windows))]
-
-    rows = []
-    for issue in ISSUES.keys():
-        cur_cnt = int(cur[cur["issue"] == issue]["mention_count"].sum()) if not cur[cur["issue"] == issue].empty else 0
-        hist = past[past["issue"] == issue]["mention_count"].astype(float)
-        mu = float(hist.mean()) if len(hist) > 0 else 0.0
-        sd = float(hist.std(ddof=0)) if len(hist) > 0 else 0.0
-
-        z = (cur_cnt - mu) / (sd + 1e-6) if (len(hist) > 5) else (cur_cnt - mu)
-        rows.append([issue, cur_cnt, mu, sd, z])
-
-    out = pd.DataFrame(rows, columns=["issue", "cur_cnt", "mean", "std", "spike_z"])
-    out = out.sort_values(["spike_z", "cur_cnt"], ascending=False)
-
-    out["spike_z"] = out["spike_z"].map(lambda x: round(float(x), 2))
-    out["mean"] = out["mean"].map(lambda x: round(float(x), 2))
-    out["std"] = out["std"].map(lambda x: round(float(x), 2))
-    return out
-
-
 
 @st.cache_data(ttl=3600)
 def fetch_ib_news(bank_name):
@@ -549,52 +281,53 @@ def get_news_tags(title):
     return tags
 
 def calculate_super_theme(df, ref_date=None):
-    """슈퍼테마 ETF 수익률 계산 (FDR 사용)"""
+    """슈퍼테마 ETF 수익률 및 변동성 계산 (FDR 사용)"""
     results = []
     
     if ref_date is None:
         ref_date = datetime.now()
     
-    # FDR 날짜 포맷 (YYYY-MM-DD)
     end_date_str = ref_date.strftime("%Y-%m-%d")
-    # 시작일은 넉넉하게 2달 전
-    start_date_str = (ref_date - timedelta(days=60)).strftime("%Y-%m-%d")
+    # 60D 변동성 계산을 위해 넉넉한 데이터 필요 (약 4~5개월)
+    start_date_str = (ref_date - timedelta(days=150)).strftime("%Y-%m-%d")
     
     for i, row in df.iterrows():
         ticker = str(row['Ticker']).strip()
         if ticker.endswith('.KS'): ticker = ticker.replace('.KS', '')
         
         try:
-            # FDR 데이터 수집 (기간 지정)
             hist = fdr.DataReader(ticker, start_date_str, end_date_str)
             
             if not hist.empty:
                 curr = hist['Close'].iloc[-1]
                 
-                # 1D Return
-                if len(hist) >= 2:
-                    ret_1d = ((curr - hist['Close'].iloc[-2]) / hist['Close'].iloc[-2]) * 100
-                else: ret_1d = 0
+                # Returns (Round to 1 decimal)
+                ret_1d = ((curr - hist['Close'].iloc[-2]) / hist['Close'].iloc[-2] * 100) if len(hist) >= 2 else 0
+                ret_5d = ((curr - hist['Close'].iloc[-6]) / hist['Close'].iloc[-6] * 100) if len(hist) >= 6 else 0
+                # 1M = 20 trading days
+                ret_1m = ((curr - hist['Close'].iloc[-21]) / hist['Close'].iloc[-21] * 100) if len(hist) >= 21 else 0
                 
-                # 5D Return
-                if len(hist) >= 6:
-                    ret_5d = ((curr - hist['Close'].iloc[-6]) / hist['Close'].iloc[-6]) * 100
-                else: ret_5d = 0
+                # VOL_60D Calculation (Annualized Volatility of last 60 days)
+                # Formula: StdDev(Daily Returns of last 60 days) * sqrt(252) * 100
+                if len(hist) > 60:
+                    recent_60 = hist['Close'].iloc[-61:] # Get 61 points to have 60 returns
+                    daily_ret = recent_60.pct_change().dropna()
+                    vol_60d = daily_ret.std() * (252 ** 0.5) * 100
+                else:
+                    vol_60d = 0
 
-                # 1M Return (approx 20 trading days)
-                if len(hist) >= 21:
-                    ret_1m = ((curr - hist['Close'].iloc[-21]) / hist['Close'].iloc[-21]) * 100
-                else: 
-                    ret_1m = ((curr - hist['Close'].iloc[0]) / hist['Close'].iloc[0]) * 100
+                # Get Score from Input DF if exists, else 0
+                score = row.get('Score', 0)
                 
                 results.append({
                     "Ticker": row['Ticker'],
                     "Name": row['Name'],
                     "Theme": row['Theme'],
-                    "Price": curr,
-                    "1D": round(ret_1d, 2),
-                    "5D": round(ret_5d, 2),
-                    "1M": round(ret_1m, 2)
+                    "Score": score, # Scoring provided by user
+                    "1D": round(ret_1d, 1),
+                    "5D": round(ret_5d, 1),
+                    "1M": round(ret_1m, 1),
+                    "VOL_60D": round(vol_60d, 1)
                 })
             else:
                  st.warning(f"{ticker}: 데이터 없음")
@@ -602,42 +335,44 @@ def calculate_super_theme(df, ref_date=None):
             st.error(f"{ticker} 에러: {e}")
     
     if not results:
-        return pd.DataFrame(columns=["Ticker", "Name", "Theme", "Price", "1D", "5D", "1M"])
+        return pd.DataFrame(columns=["Ticker", "Name", "Theme", "Score", "1D", "5D", "1M", "VOL_60D"])
     
     return pd.DataFrame(results)
 
 def calculate_super_stock(df, ref_date=None):
-    """슈퍼스탁 데이터 계산 (FDR 사용 - 펀더멘털 제외 Price 위주)"""
+    """슈퍼스탁 데이터 계산 (Mkt.Cap, Score, Multiples 포함)"""
     results = []
     
     if ref_date is None:
         ref_date = datetime.now()
         
     end_date_str = ref_date.strftime("%Y-%m-%d")
-    start_date_str = (ref_date - timedelta(days=15)).strftime("%Y-%m-%d") # 스탁은 짧게 봄
+    start_date_str = (ref_date - timedelta(days=10)).strftime("%Y-%m-%d")
 
     for i, row in df.iterrows():
         ticker = str(row['Ticker']).strip()
         if ticker.endswith('.KS'): ticker = ticker.replace('.KS', '')
         
         try:
-            hist = fdr.DataReader(ticker, start_date_str, end_date_str)
+            # FDR is used mainly to verify ticker is active, or we could skip if we trust input.
+            # But let's fetch to ensure we're aligned with market.
+            # Actually, user wants "Organize by MktCap, Score...". 
+            # If we don't fetch price, we can't show "Change". 
+            # But user request focused on "Mkt.Cap, score, PER, PEG".
+            # Input DF already has these from universe.xslx via `update_universe.py`.
             
-            if not hist.empty:
-                curr = hist['Close'].iloc[-1]
-                prev = hist['Close'].iloc[-2] if len(hist) >= 2 else curr
-                pct = ((curr - prev)/prev)*100 if prev else 0
-                
-                results.append({
-                    "Ticker": row['Ticker'],
-                    "Name": row['Name'],
-                    "Sector": row['Sector'],
-                    "Price": curr,
-                    "Change": round(pct, 2),
-                    "PER": 0, # N/A
-                    "PBR": 0, # N/A
-                    "ROE": 0  # N/A
-                })
+            # Fetch price just for validity check
+            # hist = fdr.DataReader(ticker, start_date_str, end_date_str)
+            
+            results.append({
+                "Ticker": row['Ticker'],
+                "Name": row['Name'],
+                "Sector": row['Sector'],
+                "Mkt.Cap($bn)": row.get('MktGap', 0), # MktGap column from make_universe
+                "Score": row.get('Score', 0),
+                "PER": row.get('PER', 0),
+                "PEG": row.get('PEG', 0)
+            })
         except: pass
         
     return pd.DataFrame(results)
@@ -765,6 +500,7 @@ with st.sidebar:
     menu = st.radio("메뉴 선택", [
         "📰 Daily Market Narrative", 
         "📈 Super-Stock",
+        "💎 Earnings Scout",
         "📊 TIMEFOLIO Analysis"
     ])
     
@@ -802,8 +538,117 @@ if menu == "📰 Daily Market Narrative":
     st.markdown("#### 🚨 Global Market Event Radar (Key Events)")
     st.info("🌐 이번 주 시장을 움직이는 핵심 매크로 이벤트 & 뉴스")
     
+    # [NEW] KDI Economic Keywords (High Priority User Request)
+    kdi_keywords = fetch_kdi_keywords()
+    if kdi_keywords:
+        st.markdown("##### 🇰🇷 KDI Economic Issue Keywords (경제 현안 키워드)")
+        # 칩 스타일로 표시
+        kdi_html = ""
+        for kw in kdi_keywords:
+            kdi_html += f"<span style='background-color:#e0f2f1; padding:4px 8px; border-radius:16px; margin:4px; display:inline-block; font-size:0.9em; color:#00695c;'>#{kw}</span>"
+        st.markdown(kdi_html, unsafe_allow_html=True)
+        st.caption("Source: KDI 경제정보센터 - Issue Trend")
+        st.markdown("---")
+
     global_events = fetch_global_events()
+    
+    # [NEW] WordCloud Visualization (Entity & Keyword Focused)
     if global_events:
+        try:
+            # 1. 텍스트 데이터 확보
+            titles = [e['title'] for e in global_events]
+            all_text = " ".join(titles)
+            
+            # 2. 스마트 키워드 추출 (Entity-First Strategy)
+            # 사용자의 요구: "Robotics, AI, IEEPA, Greenland 같은 고유명사나 테마 키워드 위주"
+            # 전략: 
+            # (1) 영어: 대문자로 시작하는 단어 (Proper Nouns) OR 대문자 아크로님 (AI, CPI) 추출
+            # (2) 한글: 2글자 이상 명사 추정 단어 (조사는 불용어로 처리)
+            # (3) 소문자라도 '경제 핵심 용어'는 포함 (inflation, rates, yield)
+            
+            # 핵심 경제 용어 리스트 (소문자일 경우를 대비)
+            core_keywords = set(['inflation', 'rates', 'yield', 'bond', 'gold', 'oil', 'crisis', 'tariff', 'trade', 'robotics', 'bio', 'chips', 'semiconductor', 'battery', 'ev', 'auto', 'housing', 'job', 'labor'])
+            
+            extracted_words = []
+            
+            # 정규식 패턴: 
+            # - [A-Z]+[a-z]+ : Greenland, Fed, Trump (첫글자 대문자)
+            # - [A-Z]{2,} : AI, CPI, FOMC, IEEPA (대문자 아크로님)
+            # - [가-힣]{2,} : 한글 단어 (삼성전자, 반도체...)
+            # - 일반 단어 중 core_keywords에 속하는 것
+            
+            # 토큰화 (띄어쓰기 기준 먼저 분리 후 정규식 체크가 나을 수도 있지만, re.findall이 강력함)
+            # 일단 전체에서 패턴 매칭
+            
+            # 1. English Proper Nouns & Acronyms
+            eng_entities = re.findall(r'\b[A-Z][a-zA-Z]*\b', all_text) 
+            # 2. Korean Words
+            kor_words = re.findall(r'[가-힣]{2,}', all_text)
+            
+            # 3. Core Keywords (Lowercase check)
+            tokens = re.findall(r'\b\w+\b', all_text.lower())
+            
+            final_tokens = []
+            
+            # 대문자 엔티티 추가
+            final_tokens.extend(eng_entities)
+            # 한글 추가
+            final_tokens.extend(kor_words)
+            # 핵심 소문자 키워드 추가
+            for t in tokens:
+                if t in core_keywords:
+                    final_tokens.append(t.capitalize()) # 시각화를 위해 첫글자 대문자화
+            
+            # 리스트를 다시 텍스트로 합쳐서 WordCloud에 전달 (Collocations 활용을 위해)
+            # 하지만 WordCloud의 generate_from_text는 자체 split을 하므로, 
+            # generate_from_frequencies를 쓰거나, 그냥 필터링된 단어만 공백으로 이어서 넣음.
+            filtered_text = " ".join(final_tokens)
+            
+            # 불용어(Stopwords) - Entity 중에서도 의미 없는 것 제거
+            stopwords = set([
+                'The', 'A', 'An', 'In', 'On', 'At', 'To', 'For', 'Of', 'By', 'With', 'From',
+                'Is', 'Are', 'Was', 'Were', 'Be', 'Been', 
+                'It', 'This', 'That', 'These', 'Those', 'He', 'She', 'They', 'We', 'You',
+                'What', 'Who', 'Which', 'Why', 'How', 'Where', 'When',
+                'And', 'Or', 'But', 'So', 'Because', 'If', 'While',
+                'New', 'Top', 'Best', 'Daily', 'Weekly', 'Monthly', 'Today', 'Year',
+                'Stock', 'Stocks', 'Market', 'Markets', 'Price', 'Prices', 
+                'News', 'Report', 'Update', 'Live', 'Watch', 'Analysis', 'Forecast',
+                'Vs', 'Versus', 'Via', 'Says', 'Said', 'About', 'After', 'Before',
+                'High', 'Low', 'Record', 'Close', 'Open', 'Gain', 'Loss',
+                'Very', 'Mostly', 'Mainly', 'Just', 'Only', 'Even', 'Still',
+                'Review', 'Outlook', 'Summary', 'Brief', 'Headline',
+                '상승', '하락', '특징주', '전망', '분석', '마감', '오전', '오후', '속보', '종목',
+                '오늘', '내일', '이번', '지난', '관련', '대해', '대한', '통해',
+                # Indices & Broad Regions to exclude per User Request
+                'Nasdaq', 'NASDAQ', 'Kospi', 'KOSPI', 'Kosdaq', 'KOSDAQ', 'Dow', 'Jones', 'S&P', 'SPX',
+                'European', 'Europe', 'Asian', 'Asia', 'American', 'America', 'Global', 'World',
+                'Wall', 'Street', 'Futures', 'Index', 'Indices', 'ETF', 'ETFs',
+                # Time units (Explicitly requested to exclude)
+                'Day', 'Days', 'Week', 'Weeks', 'Month', 'Months', 'Year', 'Years', 'Annual', 'Quarter', 'Quarterly'
+            ])
+            
+            wc = WordCloud(
+                font_path='malgun.ttf', 
+                width=800, 
+                height=350, 
+                background_color='white',
+                colormap='Spectral', # 좀 더 다채로운 색상
+                stopwords=stopwords,
+                regexp=r"\w[\w']+", # 기본 토크나이저 사용 (이미 텍스트를 정제했으므로)
+                collocations=False # 단어 중복 방지 (Bigram 끄기)
+            )
+            wc.generate(filtered_text)
+
+            st.markdown("##### ☁️ Market Issue Keyword (시장 핵심 명사/테마)")
+            st.image(wc.to_array(), use_container_width=True)
+            
+        except Exception as e:
+            # st.error(f"WordCloud Error: {e}")
+            pass
+            
+    if global_events:
+
         for n in global_events:
             # 날짜 포맷팅
             try:
@@ -829,71 +674,6 @@ if menu == "📰 Daily Market Narrative":
         st.write("현재 감지된 주요 이벤트가 없습니다.")
 
     st.markdown("---")
-
-    # =========================
-    # Issue Trend UI (KDI-style)
-    # =========================
-    st.markdown("### 📈 Issue Trend (30분 단위)")
-    with st.expander("옵션", expanded=False):
-        refresh_sec = st.selectbox("자동 새로고침(초)", [30, 60, 120, 300, 600, 1800], index=3)
-        st.caption("30분 단위 집계라 너무 짧게 새로고침할 필요는 없음. 데모용으로는 유용함")
-        st.markdown(f"<meta http-equiv='refresh' content='{refresh_sec}'>", unsafe_allow_html=True)
-
-    ws, we = compute_current_window_issue_trend()
-    df_all = read_issue_windows(limit_windows=96)
-
-    if df_all.empty:
-        st.warning("이슈 트렌드 데이터 없음. 현재 30분 윈도우에 매핑되는 뉴스가 없을 수 있음.")
-    else:
-        rank = build_issue_rank(df_all, current_we=we, lookback_windows=48)
-
-        c1, c2 = st.columns([1.1, 0.9])
-
-        with c1:
-            st.markdown(f"**현재 윈도우(KST)**: {ws} ~ {we}")
-            st.markdown("**Top Issues (급증 z-score 기준)**")
-            show = rank[["issue", "cur_cnt", "spike_z"]].head(10).copy()
-            show.columns = ["Issue", "Mentions(현재 30분)", "Spike(z)"]
-            st.dataframe(show, use_container_width=True)
-
-            default_issue = show.iloc[0]["Issue"] if len(show) > 0 else list(ISSUES.keys())[0]
-            issue_sel = st.selectbox("이슈 선택", list(ISSUES.keys()), index=list(ISSUES.keys()).index(default_issue))
-
-        with c2:
-            st.markdown("**Trend (최근 24시간)**")
-            tmp = df_all.copy()
-            tmp["we_dt"] = pd.to_datetime(tmp["window_end_kst"])
-            cur_we_dt = pd.to_datetime(we)
-            tmp = tmp[(tmp["we_dt"] <= cur_we_dt) & (tmp["we_dt"] >= cur_we_dt - pd.Timedelta(hours=24))]
-            ts = tmp[tmp["issue"] == issue_sel].sort_values("we_dt")[["we_dt", "mention_count"]]
-
-            if ts.empty:
-                st.info("해당 이슈의 최근 24시간 데이터가 부족함.")
-            else:
-                chart_df = ts.rename(columns={"we_dt": "window_end", "mention_count": "mentions"}).set_index("window_end")
-                st.line_chart(chart_df)
-
-            cur_row = df_all[(df_all["window_end_kst"] == we) & (df_all["issue"] == issue_sel)]
-            top_terms = cur_row["top_terms"].iloc[0] if not cur_row.empty else ""
-            st.markdown("**대표 키워드(현재 윈도우)**")
-            st.write(top_terms if top_terms else "없음")
-
-        st.markdown("**근거 기사(현재 30분)**")
-        ev = read_issue_articles(ws, we, issue_sel)
-        if ev.empty:
-            st.write("없음")
-        else:
-            for r in ev.itertuples(index=False):
-                title = r.title or "(제목 없음)"
-                link = r.link or ""
-                meta = f"{r.published_kst or ''} · {r.source or ''}"
-                if link:
-                    st.markdown(f"- [{title}]({link}) 
-  {meta}")
-                else:
-                    st.markdown(f"- {title}  
-  {meta}")
-
 
     # 2. Global IB House View (대체된 기능)
     st.markdown("#### 2. Global IB House View (Wall St. Insight)")
@@ -1436,3 +1216,108 @@ if menu == "📊 TIMEFOLIO Analysis":
 
     st.markdown("---")
     st.link_button("🌐 공식 상세페이지 바로가기", f"https://timefolioetf.co.kr/m11_view.php?idx={target_idx}")
+# [TAB 3] Earnings Scout
+if menu == "💎 Earnings Scout":
+    st.title("💎 Earnings/Value Scout")
+    st.info("📉 주가는 하락했으나, 🎯 목표주가 괴리율(Upside)이 높은 'Low Price, High Value' 종목을 발굴합니다. (FnGuide 데이터 기반)")
+    st.warning("※ 실적 컨센서스 추이(Trend) 데이터 접근 제한으로, '1개월 변화율' 대신 '목표주가 괴리율(상승여력)'로 대체 분석합니다.")
+
+    # 1. Input Area
+    with st.expander("🛠️ 설정 (Settings)", expanded=True):
+        st.markdown("**분석 대상 종목 코드 (KR)**")
+        # Default: Samsung, Hynix, Hyundai, Kia, POSCO, Naver, Kakao, LG Chem, SDI, SK Innovation, Celltrion
+        default_tickers = "005930, 000660, 005380, 000270, 005490, 035420, 035720, 051910, 006400, 010130, 068270"
+        user_input = st.text_area("종목 코드 입력 (쉼표로 구분)", value=default_tickers, height=70)
+        
+        run_btn = st.button("🚀 분석 시작 (Analyze)", type="primary")
+
+    # 2. Analysis Logic
+    if run_btn:
+        tickers = [t.strip() for t in user_input.split(',') if t.strip()]
+        
+        results = []
+        progress_bar = st.progress(0)
+        status_text = st.empty()
+        
+        for i, ticker in enumerate(tickers):
+            status_text.text(f"🔍 Analyzing {ticker} ({i+1}/{len(tickers)})...")
+            
+            # Call Logic
+            try:
+                data = get_naver_consensus_change(ticker)
+                
+                # logic_earnings now returns 'name' if found.
+                if 'name' in data and data['name']:
+                    data['Name'] = data['name']
+                else:
+                    data['Name'] = ticker
+                
+                results.append(data)
+            except Exception as e:
+                st.error(f"{ticker} Error: {e}")
+            
+            progress_bar.progress((i + 1) / len(tickers))
+            
+        status_text.empty()
+        progress_bar.empty()
+        
+        # 3. Visualization
+        if results:
+            res_df = pd.DataFrame(results)
+            
+            # Filter Success only
+            valid_df = res_df[res_df['status'] == 'Success'].copy()
+            
+            if not valid_df.empty:
+                st.success(f"✅ {len(valid_df)}개 종목 분석 완료!")
+                
+                # Show Data
+                st.dataframe(valid_df[['ticker', 'Name', 'price_return_1m', 'eps_change_1m', 'current_eps']])
+                
+                # Scatter Plot
+                # X: Price Return (1M)
+                # Y: EPS Change (1M)
+                
+                fig = px.scatter(
+                    valid_df, 
+                    x='price_return_1m', 
+                    y='eps_change_1m',
+                    text='ticker',
+                    hover_data=['current_eps'],
+                    title="Price Drop vs Upside Potential (Divergence)",
+                    labels={
+                        'price_return_1m': '1M Price Return (%)', 
+                        'eps_change_1m': 'Analyst Upside Potential (%)'
+                    },
+                    color='eps_change_1m',
+                    color_continuous_scale='RdBu_r' # Red for high growth
+                )
+                
+                # Quadrant Lines
+                fig.add_hline(y=0, line_dash="dash", line_color="gray")
+                fig.add_vline(x=0, line_dash="dash", line_color="gray")
+                
+                # Highlight Quadrant 2 (Price < 0, EPS > 0) -> "Hidden Gems"
+                fig.add_shape(type="rect",
+                    x0=-50, y0=0, x1=0, y1=50,
+                    fillcolor="green", opacity=0.1, layer="below", line_width=0,
+                )
+                fig.add_annotation(x=-10, y=10, text="💎 Gem Alert", showarrow=False, font=dict(color="green", size=15))
+
+                fig.update_traces(textposition='top center', marker=dict(size=12, line=dict(width=1, color='DarkSlateGrey')))
+                fig.update_layout(height=600)
+                
+                st.plotly_chart(fig, use_container_width=True)
+                
+                # Gem List
+                gems = valid_df[(valid_df['price_return_1m'] < 0) & (valid_df['eps_change_1m'] > 0)]
+                if not gems.empty:
+                    st.markdown("### 💎 Hidden Gems (Price Down, EPS Up)")
+                    st.table(gems[['ticker', 'price_return_1m', 'eps_change_1m']])
+                else:
+                    st.info("💎 이번 분석에서 발견된 'Hidden Gem' 종목이 없습니다.")
+                    
+            else:
+                st.warning("유효한 데이터가 없습니다. (컨센서스 부재 등)")
+                if not res_df.empty:
+                    st.write("Raw Results:", res_df)
