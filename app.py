@@ -10,6 +10,9 @@ import yfinance as yf
 import feedparser
 import numpy as np
 import pytz
+import sqlite3
+from collections import defaultdict
+import math
 
 # [필수] 같은 폴더의 etf.py에서 클래스 임포트
 try:
@@ -148,6 +151,329 @@ def fetch_global_events():
     unique_news.sort(key=lambda x: x['published_dt'], reverse=True)
     
     return unique_news[:7] # Top 7 (야후 추가로 개수 늘림)
+
+
+# =========================
+# KDI-style Issue Trend MVP
+# =========================
+
+ISSUE_DB_PATH = "issue_trend.db"
+
+# 자산배분 관점 이슈 세트 (MVP 12개)
+ISSUES = {
+    "물가/인플레": {
+        "kw": ["cpi", "pce", "inflation", "disinflation", "core", "headline", "prices", "물가", "인플레", "인플레이션", "근원"],
+        "asset_hint": ["채권", "환율", "주식"]
+    },
+    "금리/연준": {
+        "kw": ["fed", "fomc", "powell", "rate", "rates", "hike", "cut", "hold", "dot plot", "연준", "fomc", "파월", "기준금리", "금리인상", "금리인하", "동결"],
+        "asset_hint": ["채권", "주식", "환율"]
+    },
+    "채권/수익률": {
+        "kw": ["treasury", "ust", "yield", "10y", "2y", "curve", "spread", "duration", "국채", "미국채", "수익률", "일드커브", "커브", "스프레드", "듀레이션"],
+        "asset_hint": ["채권"]
+    },
+    "달러/환율": {
+        "kw": ["dollar", "dxy", "fx", "usd", "usdkrw", "eurusd", "yen", "yuan", "달러", "환율", "원달러", "외환", "강달러", "약달러"],
+        "asset_hint": ["환율"]
+    },
+    "유가/에너지": {
+        "kw": ["oil", "wti", "brent", "crude", "opec", "gas", "lng", "유가", "원유", "오펙", "감산", "증산", "천연가스", "lng"],
+        "asset_hint": ["원자재", "인플레"]
+    },
+    "원자재/금속": {
+        "kw": ["gold", "silver", "copper", "aluminum", "nickel", "lithium", "iron ore", "금", "은", "구리", "알루미늄", "니켈", "리튬", "철광석"],
+        "asset_hint": ["원자재"]
+    },
+    "경기/성장": {
+        "kw": ["gdp", "growth", "recession", "soft landing", "hard landing", "pmi", "ism", "unemployment", "jobs", "고용", "실업", "경기침체", "성장률", "pmi", "ism"],
+        "asset_hint": ["주식", "채권"]
+    },
+    "실적/어닝": {
+        "kw": ["earnings", "guidance", "revenue", "margin", "eps", "beats", "miss", "실적", "어닝", "가이던스", "매출", "마진", "eps", "서프라이즈"],
+        "asset_hint": ["주식"]
+    },
+    "AI/반도체": {
+        "kw": ["ai", "gpu", "semiconductor", "chip", "nvidia", "amd", "tsmc", "hbm", "ai", "반도체", "칩", "gpu", "엔비디아", "tsmc", "hbm"],
+        "asset_hint": ["주식"]
+    },
+    "중국/신흥국": {
+        "kw": ["china", "beijing", "yuan", "emerging", "중국", "위안", "신흥국", "부동산", "헝다", "부채"],
+        "asset_hint": ["환율", "원자재", "주식"]
+    },
+    "지정학/리스크": {
+        "kw": ["geopolitical", "sanction", "war", "conflict", "shipping", "strait", "iran", "israel", "ukraine", "지정학", "전쟁", "분쟁", "제재", "해운", "홍해"],
+        "asset_hint": ["원자재", "환율", "주식"]
+    },
+    "정책/규제": {
+        "kw": ["policy", "regulation", "tariff", "ban", "stimulus", "fiscal", "정책", "규제", "관세", "부양", "재정"],
+        "asset_hint": ["주식", "환율", "채권"]
+    }
+}
+
+STOPWORDS_ISSUE = set([
+    "the","a","an","and","or","to","of","in","on","for","with","as","at","by",
+    "from","after","before","today","live","update","updates",
+    "시장","미국","글로벌","이번","관련","속보","단독","분석","전망","가능","우려","발표"
+])
+
+def _norm_text(t: str) -> str:
+    t = (t or "").lower()
+    t = re.sub(r"<[^>]*>", " ", t)
+    t = re.sub(r"[^0-9a-zA-Z가-힣\s/\.%\-]", " ", t)
+    t = re.sub(r"\s+", " ", t).strip()
+    return t
+
+def init_issue_db():
+    con = sqlite3.connect(ISSUE_DB_PATH)
+    cur = con.cursor()
+    cur.execute("""
+    CREATE TABLE IF NOT EXISTS issue_windows (
+        window_start_kst TEXT NOT NULL,
+        window_end_kst   TEXT NOT NULL,
+        issue            TEXT NOT NULL,
+        mention_count    INTEGER NOT NULL,
+        top_terms        TEXT,
+        PRIMARY KEY (window_start_kst, window_end_kst, issue)
+    )
+    """)
+    cur.execute("""
+    CREATE TABLE IF NOT EXISTS issue_articles (
+        window_start_kst TEXT NOT NULL,
+        window_end_kst   TEXT NOT NULL,
+        issue            TEXT NOT NULL,
+        title            TEXT,
+        link             TEXT,
+        published_kst    TEXT,
+        source           TEXT
+    )
+    """)
+    con.commit()
+    con.close()
+
+@st.cache_resource
+def ensure_issue_db():
+    init_issue_db()
+    return True
+
+def floor_to_30m_kst(dt_kst: datetime) -> datetime:
+    m = (dt_kst.minute // 30) * 30
+    return dt_kst.replace(minute=m, second=0, microsecond=0)
+
+def score_issue(text: str, issue_name: str) -> int:
+    t = _norm_text(text)
+    score = 0
+    for kw in ISSUES[issue_name]["kw"]:
+        k = _norm_text(kw)
+        if not k or k in STOPWORDS_ISSUE:
+            continue
+        if k in t:
+            score += 1
+    return score
+
+def map_article_to_issue(title: str, summary: str = ""):
+    text = f"{title} {summary}"
+    t = _norm_text(text)
+    if not t or len(t) < 10:
+        return None, 0
+
+    best_issue = None
+    best_score = 0
+    for issue in ISSUES.keys():
+        sc = score_issue(t, issue)
+        if sc > best_score:
+            best_score = sc
+            best_issue = issue
+
+    if best_score < 2:
+        return None, best_score
+    return best_issue, best_score
+
+def fetch_issue_trend_items():
+    items = []
+    # Yahoo (기존 함수 재사용)
+    items.extend(fetch_yahoo_news(["SPY", "QQQ", "^DJI"]))
+
+    # Google RSS (폭 넓게)
+    query = (
+        "Fed OR FOMC OR CPI OR inflation OR yields OR dollar OR FX OR "
+        "oil OR OPEC OR recession OR GDP OR PMI OR earnings OR guidance OR AI OR semiconductor "
+        "when:3d"
+    )
+    url = f"https://news.google.com/rss/search?q={requests.utils.quote(query)}&hl=en-US&gl=US&ceid=US:en"
+    try:
+        feed = feedparser.parse(url)
+        for e in feed.entries[:150]:
+            title = getattr(e, "title", "")
+            link = getattr(e, "link", "")
+            if hasattr(e, "published_parsed") and e.published_parsed:
+                dt = datetime(*e.published_parsed[:6])
+            else:
+                dt = datetime.now()
+            items.append({
+                "title": title,
+                "link": link,
+                "published_dt": dt,
+                "source": e.source.title if hasattr(e, 'source') else "GoogleNews"
+            })
+    except:
+        pass
+
+    # 중복 제거 + 최신순
+    seen = set()
+    uniq = []
+    for it in items:
+        lk = it.get("link", "")
+        if not lk or lk in seen:
+            continue
+        seen.add(lk)
+        uniq.append(it)
+
+    uniq.sort(key=lambda x: x.get("published_dt", datetime.min), reverse=True)
+    return uniq
+
+def store_window_issue_stats(ws: str, we: str, issue_counts: dict, issue_top_terms: dict, issue_articles: dict):
+    con = sqlite3.connect(ISSUE_DB_PATH)
+    cur = con.cursor()
+
+    for issue, cnt in issue_counts.items():
+        top_terms = issue_top_terms.get(issue, "")
+        cur.execute("""
+            INSERT INTO issue_windows(window_start_kst, window_end_kst, issue, mention_count, top_terms)
+            VALUES (?, ?, ?, ?, ?)
+            ON CONFLICT(window_start_kst, window_end_kst, issue)
+            DO UPDATE SET mention_count=excluded.mention_count, top_terms=excluded.top_terms
+        """, (ws, we, issue, int(cnt), top_terms))
+
+    cur.execute("""
+        DELETE FROM issue_articles
+        WHERE window_start_kst=? AND window_end_kst=?
+    """, (ws, we))
+
+    for issue, rows in issue_articles.items():
+        for r in rows[:10]:
+            cur.execute("""
+                INSERT INTO issue_articles(window_start_kst, window_end_kst, issue, title, link, published_kst, source)
+                VALUES (?, ?, ?, ?, ?, ?, ?)
+            """, (ws, we, issue, r.get("title"), r.get("link"), r.get("published_kst"), r.get("source")))
+
+    con.commit()
+    con.close()
+
+def read_issue_windows(limit_windows=96):
+    con = sqlite3.connect(ISSUE_DB_PATH)
+    df = pd.read_sql_query("""
+        SELECT window_start_kst, window_end_kst, issue, mention_count, top_terms
+        FROM issue_windows
+        ORDER BY window_end_kst DESC
+        LIMIT ?
+    """, con, params=(limit_windows * len(ISSUES),))
+    con.close()
+    return df
+
+def read_issue_articles(ws: str, we: str, issue: str):
+    con = sqlite3.connect(ISSUE_DB_PATH)
+    df = pd.read_sql_query("""
+        SELECT title, link, published_kst, source
+        FROM issue_articles
+        WHERE window_start_kst=? AND window_end_kst=? AND issue=?
+        ORDER BY published_kst DESC
+        LIMIT 20
+    """, con, params=(ws, we, issue))
+    con.close()
+    return df
+
+def compute_current_window_issue_trend():
+    ensure_issue_db()
+
+    tz = pytz.timezone("Asia/Seoul")
+    now_kst = datetime.now(tz)
+    we_dt = floor_to_30m_kst(now_kst)
+    ws_dt = we_dt - timedelta(minutes=30)
+
+    ws = ws_dt.strftime("%Y-%m-%d %H:%M")
+    we = we_dt.strftime("%Y-%m-%d %H:%M")
+
+    items = fetch_issue_trend_items()
+
+    issue_counts = {k: 0 for k in ISSUES.keys()}
+    issue_terms = defaultdict(lambda: defaultdict(int))
+    issue_evidence = defaultdict(list)
+
+    for it in items:
+        dt = it.get("published_dt")
+        if not isinstance(dt, datetime):
+            continue
+
+        if dt.tzinfo is None:
+            dt_kst = tz.localize(dt)
+        else:
+            dt_kst = dt.astimezone(tz)
+
+        if not (ws_dt <= dt_kst < we_dt):
+            continue
+
+        title = it.get("title", "")
+        link = it.get("link", "")
+        src = it.get("source", "")
+
+        issue, sc = map_article_to_issue(title, "")
+        if issue is None:
+            continue
+
+        issue_counts[issue] += 1
+
+        tnorm = _norm_text(title)
+        for kw in ISSUES[issue]["kw"]:
+            k = _norm_text(kw)
+            if k and k in tnorm and k not in STOPWORDS_ISSUE:
+                issue_terms[issue][k] += 1
+
+        issue_evidence[issue].append({
+            "title": title,
+            "link": link,
+            "published_kst": dt_kst.strftime("%Y-%m-%d %H:%M"),
+            "source": src
+        })
+
+    issue_top_terms = {}
+    for issue, d in issue_terms.items():
+        top = sorted(d.items(), key=lambda x: x[1], reverse=True)[:5]
+        issue_top_terms[issue] = ", ".join([k for k, v in top])
+
+    store_window_issue_stats(ws, we, issue_counts, issue_top_terms, issue_evidence)
+    return ws, we
+
+def build_issue_rank(df_all: pd.DataFrame, current_we: str, lookback_windows=48):
+    cur = df_all[df_all["window_end_kst"] == current_we].copy()
+    if cur.empty:
+        return pd.DataFrame()
+
+    df = df_all.copy()
+    df["we_dt"] = pd.to_datetime(df["window_end_kst"])
+    cur_we_dt = pd.to_datetime(current_we)
+
+    past = df[(df["we_dt"] < cur_we_dt) & (df["we_dt"] >= cur_we_dt - pd.Timedelta(minutes=30*lookback_windows))]
+
+    rows = []
+    for issue in ISSUES.keys():
+        cur_cnt = int(cur[cur["issue"] == issue]["mention_count"].sum()) if not cur[cur["issue"] == issue].empty else 0
+        hist = past[past["issue"] == issue]["mention_count"].astype(float)
+        mu = float(hist.mean()) if len(hist) > 0 else 0.0
+        sd = float(hist.std(ddof=0)) if len(hist) > 0 else 0.0
+
+        z = (cur_cnt - mu) / (sd + 1e-6) if (len(hist) > 5) else (cur_cnt - mu)
+        rows.append([issue, cur_cnt, mu, sd, z])
+
+    out = pd.DataFrame(rows, columns=["issue", "cur_cnt", "mean", "std", "spike_z"])
+    out = out.sort_values(["spike_z", "cur_cnt"], ascending=False)
+
+    out["spike_z"] = out["spike_z"].map(lambda x: round(float(x), 2))
+    out["mean"] = out["mean"].map(lambda x: round(float(x), 2))
+    out["std"] = out["std"].map(lambda x: round(float(x), 2))
+    return out
+
+
 
 @st.cache_data(ttl=3600)
 def fetch_ib_news(bank_name):
@@ -503,6 +829,71 @@ if menu == "📰 Daily Market Narrative":
         st.write("현재 감지된 주요 이벤트가 없습니다.")
 
     st.markdown("---")
+
+    # =========================
+    # Issue Trend UI (KDI-style)
+    # =========================
+    st.markdown("### 📈 Issue Trend (30분 단위)")
+    with st.expander("옵션", expanded=False):
+        refresh_sec = st.selectbox("자동 새로고침(초)", [30, 60, 120, 300, 600, 1800], index=3)
+        st.caption("30분 단위 집계라 너무 짧게 새로고침할 필요는 없음. 데모용으로는 유용함")
+        st.markdown(f"<meta http-equiv='refresh' content='{refresh_sec}'>", unsafe_allow_html=True)
+
+    ws, we = compute_current_window_issue_trend()
+    df_all = read_issue_windows(limit_windows=96)
+
+    if df_all.empty:
+        st.warning("이슈 트렌드 데이터 없음. 현재 30분 윈도우에 매핑되는 뉴스가 없을 수 있음.")
+    else:
+        rank = build_issue_rank(df_all, current_we=we, lookback_windows=48)
+
+        c1, c2 = st.columns([1.1, 0.9])
+
+        with c1:
+            st.markdown(f"**현재 윈도우(KST)**: {ws} ~ {we}")
+            st.markdown("**Top Issues (급증 z-score 기준)**")
+            show = rank[["issue", "cur_cnt", "spike_z"]].head(10).copy()
+            show.columns = ["Issue", "Mentions(현재 30분)", "Spike(z)"]
+            st.dataframe(show, use_container_width=True)
+
+            default_issue = show.iloc[0]["Issue"] if len(show) > 0 else list(ISSUES.keys())[0]
+            issue_sel = st.selectbox("이슈 선택", list(ISSUES.keys()), index=list(ISSUES.keys()).index(default_issue))
+
+        with c2:
+            st.markdown("**Trend (최근 24시간)**")
+            tmp = df_all.copy()
+            tmp["we_dt"] = pd.to_datetime(tmp["window_end_kst"])
+            cur_we_dt = pd.to_datetime(we)
+            tmp = tmp[(tmp["we_dt"] <= cur_we_dt) & (tmp["we_dt"] >= cur_we_dt - pd.Timedelta(hours=24))]
+            ts = tmp[tmp["issue"] == issue_sel].sort_values("we_dt")[["we_dt", "mention_count"]]
+
+            if ts.empty:
+                st.info("해당 이슈의 최근 24시간 데이터가 부족함.")
+            else:
+                chart_df = ts.rename(columns={"we_dt": "window_end", "mention_count": "mentions"}).set_index("window_end")
+                st.line_chart(chart_df)
+
+            cur_row = df_all[(df_all["window_end_kst"] == we) & (df_all["issue"] == issue_sel)]
+            top_terms = cur_row["top_terms"].iloc[0] if not cur_row.empty else ""
+            st.markdown("**대표 키워드(현재 윈도우)**")
+            st.write(top_terms if top_terms else "없음")
+
+        st.markdown("**근거 기사(현재 30분)**")
+        ev = read_issue_articles(ws, we, issue_sel)
+        if ev.empty:
+            st.write("없음")
+        else:
+            for r in ev.itertuples(index=False):
+                title = r.title or "(제목 없음)"
+                link = r.link or ""
+                meta = f"{r.published_kst or ''} · {r.source or ''}"
+                if link:
+                    st.markdown(f"- [{title}]({link})  
+  {meta}")
+                else:
+                    st.markdown(f"- {title}  
+  {meta}")
+
 
     # 2. Global IB House View (대체된 기능)
     st.markdown("#### 2. Global IB House View (Wall St. Insight)")
