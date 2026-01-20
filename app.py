@@ -18,8 +18,14 @@ except ImportError:
     st.error("⚠️ 'etf.py' 파일이 없습니다. 같은 폴더에 넣어주세요.")
     st.stop()
 
-# 보안 인증서 경고 무시
+# 보안 인증서 경고 무시 및 SSL 검증 우회 (Global Patch)
 urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
+original_request = requests.Session.request
+def patched_request(self, method, url, *args, **kwargs):
+    kwargs['verify'] = False
+    return original_request(self, method, url, *args, **kwargs)
+requests.Session.request = patched_request
+
 
 # ---------------------------------------------------------
 # 1. 페이지 설정
@@ -215,6 +221,100 @@ def get_news_tags(title):
         tags.append(("📢 Event", "#F2F2F2", "#333333"))
         
     return tags
+
+def calculate_super_theme(df, ref_date=None):
+    """슈퍼테마 ETF 수익률 계산 (FDR 사용)"""
+    results = []
+    
+    if ref_date is None:
+        ref_date = datetime.now()
+    
+    # FDR 날짜 포맷 (YYYY-MM-DD)
+    end_date_str = ref_date.strftime("%Y-%m-%d")
+    # 시작일은 넉넉하게 2달 전
+    start_date_str = (ref_date - timedelta(days=60)).strftime("%Y-%m-%d")
+    
+    for i, row in df.iterrows():
+        ticker = str(row['Ticker']).strip()
+        if ticker.endswith('.KS'): ticker = ticker.replace('.KS', '')
+        
+        try:
+            # FDR 데이터 수집 (기간 지정)
+            hist = fdr.DataReader(ticker, start_date_str, end_date_str)
+            
+            if not hist.empty:
+                curr = hist['Close'].iloc[-1]
+                
+                # 1D Return
+                if len(hist) >= 2:
+                    ret_1d = ((curr - hist['Close'].iloc[-2]) / hist['Close'].iloc[-2]) * 100
+                else: ret_1d = 0
+                
+                # 5D Return
+                if len(hist) >= 6:
+                    ret_5d = ((curr - hist['Close'].iloc[-6]) / hist['Close'].iloc[-6]) * 100
+                else: ret_5d = 0
+
+                # 1M Return (approx 20 trading days)
+                if len(hist) >= 21:
+                    ret_1m = ((curr - hist['Close'].iloc[-21]) / hist['Close'].iloc[-21]) * 100
+                else: 
+                    ret_1m = ((curr - hist['Close'].iloc[0]) / hist['Close'].iloc[0]) * 100
+                
+                results.append({
+                    "Ticker": row['Ticker'],
+                    "Name": row['Name'],
+                    "Theme": row['Theme'],
+                    "Price": curr,
+                    "1D": round(ret_1d, 2),
+                    "5D": round(ret_5d, 2),
+                    "1M": round(ret_1m, 2)
+                })
+            else:
+                 st.warning(f"{ticker}: 데이터 없음")
+        except Exception as e:
+            st.error(f"{ticker} 에러: {e}")
+    
+    if not results:
+        return pd.DataFrame(columns=["Ticker", "Name", "Theme", "Price", "1D", "5D", "1M"])
+    
+    return pd.DataFrame(results)
+
+def calculate_super_stock(df, ref_date=None):
+    """슈퍼스탁 데이터 계산 (FDR 사용 - 펀더멘털 제외 Price 위주)"""
+    results = []
+    
+    if ref_date is None:
+        ref_date = datetime.now()
+        
+    end_date_str = ref_date.strftime("%Y-%m-%d")
+    start_date_str = (ref_date - timedelta(days=15)).strftime("%Y-%m-%d") # 스탁은 짧게 봄
+
+    for i, row in df.iterrows():
+        ticker = str(row['Ticker']).strip()
+        if ticker.endswith('.KS'): ticker = ticker.replace('.KS', '')
+        
+        try:
+            hist = fdr.DataReader(ticker, start_date_str, end_date_str)
+            
+            if not hist.empty:
+                curr = hist['Close'].iloc[-1]
+                prev = hist['Close'].iloc[-2] if len(hist) >= 2 else curr
+                pct = ((curr - prev)/prev)*100 if prev else 0
+                
+                results.append({
+                    "Ticker": row['Ticker'],
+                    "Name": row['Name'],
+                    "Sector": row['Sector'],
+                    "Price": curr,
+                    "Change": round(pct, 2),
+                    "PER": 0, # N/A
+                    "PBR": 0, # N/A
+                    "ROE": 0  # N/A
+                })
+        except: pass
+        
+    return pd.DataFrame(results)
 
 @st.cache_data(ttl=86400)
 def fetch_statcounter_data(metric="search_engine", device="desktop+mobile+tablet+console", region="ww", from_year="2019", from_month="01", to_year=None, to_month=None):
@@ -455,6 +555,95 @@ if menu == "📰 Daily Market Narrative":
         st.text_area("🗣️ Macro View & Issue", height=150, placeholder="예: 미 국채 금리 상승으로 인한 성장주 조정 가능성 논의...")
     with c_memo2:
         st.text_area("⚖️ Rebalancing Idea", height=150, placeholder="예: 'AI 반도체' 비중 유지하되, '2차전지' 비중 축소 의견 우세...")
+
+    st.markdown("---")
+
+    # 4. Morning Report Helper (New Feature moved here)
+    with st.expander("📝 Morning Report Helper (데이터 분석 도구)", expanded=False):
+        # 기준 날짜 선택 (오늘이 기본)
+        col_date, col_dummy = st.columns([1, 2])
+        with col_date:
+            target_date = st.date_input("📅 기준 날짜 선택 (이 날짜 기준 수익률 계산)", datetime.now())
+
+        # 템플릿 다운로드 버튼 제공
+        try:
+            with open("universe.xlsx", "rb") as f:
+                btn = st.download_button(
+                    label="📥 유니버스 템플릿 다운로드 (universe.xlsx)",
+                    data=f,
+                    file_name="universe.xlsx",
+                    mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
+                )
+        except: pass
+
+        # 입력 방식 선택
+        input_method = st.radio("데이터 입력 방식 선택", ["📂 엑셀 파일 업로드", "✍️ 티커 직접 입력 (복사/붙여넣기)", "🎁 샘플 데이터 (시연용)"], horizontal=True)
+        
+        df_themes = None
+        df_stocks = None
+        
+        if input_method == "📂 엑셀 파일 업로드":
+            uploaded_file = st.file_uploader("universe.xlsx 업로드", type=['xlsx'])
+            if uploaded_file:
+                try:
+                    uploaded_file.seek(0)
+                    df_themes = pd.read_excel(uploaded_file, sheet_name=0, engine='openpyxl')
+                    try:
+                        df_stocks = pd.read_excel(uploaded_file, sheet_name=1, engine='openpyxl')
+                    except:
+                        df_stocks = None
+                    st.success("파일 로드 성공! (Themes & Stocks)")
+                except Exception as e:
+                    st.error(f"엑셀 로드 오류 (DRM 등): {e}")
+                
+        elif input_method == "✍️ 티커 직접 입력 (복사/붙여넣기)":
+            c1, c2 = st.columns(2)
+            with c1:
+                st.markdown("**1. 슈퍼테마 (ETF)**")
+                txt_theme = st.text_area("티커 입력 (쉼표로 구분)", "396500, LIT, SHLD, 091230", height=100)
+                if txt_theme:
+                    tickers = [t.strip() for t in txt_theme.split(',')]
+                    df_themes = pd.DataFrame({"Ticker": tickers, "Name": tickers, "Theme": ["Manual Input"]*len(tickers)})
+            with c2:
+                st.markdown("**2. 슈퍼스탁 (개별주)**")
+                txt_stock = st.text_area("티커 입력 (쉼표로 구분)", "NVDA, AAPL, 005930, MSFT", height=100)
+                if txt_stock:
+                    tickers = [t.strip() for t in txt_stock.split(',')]
+                    df_stocks = pd.DataFrame({"Ticker": tickers, "Name": tickers, "Sector": ["Manual Input"]*len(tickers)})
+                    
+        elif input_method == "🎁 샘플 데이터 (시연용)":
+            st.caption("※ 발표 시연을 위해 미리 저장된 유니버스 리스트를 사용합니다.")
+            # 샘플 데이터 하드코딩
+            theme_data = [["396500", "TIGER 반도체", "반도체"], ["LIT", "Global X Lithium", "2차전지"], ["SHLD", "Global X Defense", "방산"]]
+            stock_data = [["NVDA", "Nvidia", "Tech"], ["AAPL", "Apple", "Tech"], ["005930", "Samsung Elec", "Tech"]]
+            df_themes = pd.DataFrame(theme_data, columns=["Ticker", "Name", "Theme"])
+            df_stocks = pd.DataFrame(stock_data, columns=["Ticker", "Name", "Sector"])
+            st.success("샘플 데이터 로드 완료 (즉시 분석 가능)")
+        
+        # 분석 실행 UI
+        if df_themes is not None or df_stocks is not None:
+            t1, t2 = st.tabs(["■ 슈퍼테마 (ETF) 결과", "■ 슈퍼스탁 (Stock) 결과"])
+            
+            with t1:
+                if df_themes is not None:
+                    if st.button("테마 데이터 계산 시작 🚀"):
+                        with st.spinner(f"{target_date.strftime('%Y-%m-%d')} 기준 수익률 계산 중..."):
+                            res_theme = calculate_super_theme(df_themes, target_date)
+                            
+                            def color_val(val):
+                                if isinstance(val, (int, float)):
+                                    color = 'red' if val > 0 else 'blue' if val < 0 else 'black'
+                                    return f'color: {color}'
+                                return ''
+                            
+                            st.dataframe(res_theme.style.map(color_val, subset=['1D', '5D', '1M']), use_container_width=True)
+            
+            with t2:
+                if df_stocks is not None:
+                    if st.button("스탁 데이터 계산 시작 🚀"):
+                        with st.spinner(f"{target_date.strftime('%Y-%m-%d')} 기준 데이터 수집 중..."):
+                            res_stock = calculate_super_stock(df_stocks, target_date)
+                            st.dataframe(res_stock, use_container_width=True)
 
 
 # [TAB 2] Super-Stock (StatCounter) - 팀장님 개인 업무
