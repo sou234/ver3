@@ -11,3 +11,6 @@ openpyxl
 curl-cffi
 lxml
 matplotlib
+wordcloud
+seaborn
+numpy
