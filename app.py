@@ -888,7 +888,7 @@ if menu == "📰 Daily Market Narrative":
                 link = r.link or ""
                 meta = f"{r.published_kst or ''} · {r.source or ''}"
                 if link:
-                    st.markdown(f"- [{title}]({link})  \\n
+                    st.markdown(f"- [{title}]({link}) 
   {meta}")
                 else:
                     st.markdown(f"- {title}  
