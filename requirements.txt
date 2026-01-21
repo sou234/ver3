@@ -14,3 +14,5 @@ matplotlib
 wordcloud
 seaborn
 numpy
+scikit-learn
+pandas_datareader

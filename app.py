@@ -24,6 +24,16 @@ except ImportError:
     st.error("⚠️ 'etf.py' 파일이 없습니다. 같은 폴더에 넣어주세요.")
     st.stop()
 
+# [NEW] Helper for Earnings Idio Score
+import plotly.graph_objects as go
+try:
+    import logic_idio
+except ImportError:
+    logic_idio = None
+
+# [NEW] Crawler Logic Import
+import logic_crawler
+
 # [NEW] Earnings Logic Import
 try:
     from logic_earnings import get_naver_consensus_change
@@ -498,9 +508,8 @@ with st.sidebar:
     st.markdown("---")
     
     menu = st.radio("메뉴 선택", [
-        "📰 Daily Market Narrative", 
         "📈 Super-Stock",
-        "💎 Earnings Scout",
+        "💎 Earnings Idio Score",
         "📊 TIMEFOLIO Analysis"
     ])
     
@@ -511,311 +520,6 @@ with st.sidebar:
 # ---------------------------------------------------------
 # 4. 메인 화면 로직
 # ---------------------------------------------------------
-
-# [TAB 1] Daily Market Narrative (모닝 미팅용)
-if menu == "📰 Daily Market Narrative":
-    st.title("📰 Daily Market Narrative")
-    st.markdown("### ☕ Morning Meeting Board")
-    st.info("오늘의 시장 환경을 점검하고, 유니버스 테마의 리밸런싱 전략을 논의하는 공간입니다.")
-
-    # 1. Macro Environment (시장 환경 점검)
-    st.markdown("#### 1. Macro Environment (시장 분위기)")
-    cols = st.columns(6)
-    
-    # 핵심 지표 나열
-    indicators = ["KOSPI", "S&P500", "Nasdaq", "USD/KRW", "US 10Y", "WTI Oil"]
-    for i, key in enumerate(indicators):
-        if key in macro_metrics:
-            with cols[i]:
-                d = macro_metrics[key]
-                color = "normal" if d['pct_change'] >= 0 else "inverse"
-                st.metric(key, f"{d['price']:,.2f}", f"{d['pct_change']:.2f}%", delta_color=color)
-
-
-    st.markdown("---")
-
-    # 1.5 Global Market Event Radar (New Feature)
-    st.markdown("#### 🚨 Global Market Event Radar (Key Events)")
-    st.info("🌐 이번 주 시장을 움직이는 핵심 매크로 이벤트 & 뉴스")
-    
-    # [NEW] KDI Economic Keywords (High Priority User Request)
-    kdi_keywords = fetch_kdi_keywords()
-    if kdi_keywords:
-        st.markdown("##### 🇰🇷 KDI Economic Issue Keywords (경제 현안 키워드)")
-        # 칩 스타일로 표시
-        kdi_html = ""
-        for kw in kdi_keywords:
-            kdi_html += f"<span style='background-color:#e0f2f1; padding:4px 8px; border-radius:16px; margin:4px; display:inline-block; font-size:0.9em; color:#00695c;'>#{kw}</span>"
-        st.markdown(kdi_html, unsafe_allow_html=True)
-        st.caption("Source: KDI 경제정보센터 - Issue Trend")
-        st.markdown("---")
-
-    global_events = fetch_global_events()
-    
-    # [NEW] WordCloud Visualization (Entity & Keyword Focused)
-    if global_events:
-        try:
-            # 1. 텍스트 데이터 확보
-            titles = [e['title'] for e in global_events]
-            all_text = " ".join(titles)
-            
-            # 2. 스마트 키워드 추출 (Entity-First Strategy)
-            # 사용자의 요구: "Robotics, AI, IEEPA, Greenland 같은 고유명사나 테마 키워드 위주"
-            # 전략: 
-            # (1) 영어: 대문자로 시작하는 단어 (Proper Nouns) OR 대문자 아크로님 (AI, CPI) 추출
-            # (2) 한글: 2글자 이상 명사 추정 단어 (조사는 불용어로 처리)
-            # (3) 소문자라도 '경제 핵심 용어'는 포함 (inflation, rates, yield)
-            
-            # 핵심 경제 용어 리스트 (소문자일 경우를 대비)
-            core_keywords = set(['inflation', 'rates', 'yield', 'bond', 'gold', 'oil', 'crisis', 'tariff', 'trade', 'robotics', 'bio', 'chips', 'semiconductor', 'battery', 'ev', 'auto', 'housing', 'job', 'labor'])
-            
-            extracted_words = []
-            
-            # 정규식 패턴: 
-            # - [A-Z]+[a-z]+ : Greenland, Fed, Trump (첫글자 대문자)
-            # - [A-Z]{2,} : AI, CPI, FOMC, IEEPA (대문자 아크로님)
-            # - [가-힣]{2,} : 한글 단어 (삼성전자, 반도체...)
-            # - 일반 단어 중 core_keywords에 속하는 것
-            
-            # 토큰화 (띄어쓰기 기준 먼저 분리 후 정규식 체크가 나을 수도 있지만, re.findall이 강력함)
-            # 일단 전체에서 패턴 매칭
-            
-            # 1. English Proper Nouns & Acronyms
-            eng_entities = re.findall(r'\b[A-Z][a-zA-Z]*\b', all_text) 
-            # 2. Korean Words
-            kor_words = re.findall(r'[가-힣]{2,}', all_text)
-            
-            # 3. Core Keywords (Lowercase check)
-            tokens = re.findall(r'\b\w+\b', all_text.lower())
-            
-            final_tokens = []
-            
-            # 대문자 엔티티 추가
-            final_tokens.extend(eng_entities)
-            # 한글 추가
-            final_tokens.extend(kor_words)
-            # 핵심 소문자 키워드 추가
-            for t in tokens:
-                if t in core_keywords:
-                    final_tokens.append(t.capitalize()) # 시각화를 위해 첫글자 대문자화
-            
-            # 리스트를 다시 텍스트로 합쳐서 WordCloud에 전달 (Collocations 활용을 위해)
-            # 하지만 WordCloud의 generate_from_text는 자체 split을 하므로, 
-            # generate_from_frequencies를 쓰거나, 그냥 필터링된 단어만 공백으로 이어서 넣음.
-            filtered_text = " ".join(final_tokens)
-            
-            # 불용어(Stopwords) - Entity 중에서도 의미 없는 것 제거
-            stopwords = set([
-                'The', 'A', 'An', 'In', 'On', 'At', 'To', 'For', 'Of', 'By', 'With', 'From',
-                'Is', 'Are', 'Was', 'Were', 'Be', 'Been', 
-                'It', 'This', 'That', 'These', 'Those', 'He', 'She', 'They', 'We', 'You',
-                'What', 'Who', 'Which', 'Why', 'How', 'Where', 'When',
-                'And', 'Or', 'But', 'So', 'Because', 'If', 'While',
-                'New', 'Top', 'Best', 'Daily', 'Weekly', 'Monthly', 'Today', 'Year',
-                'Stock', 'Stocks', 'Market', 'Markets', 'Price', 'Prices', 
-                'News', 'Report', 'Update', 'Live', 'Watch', 'Analysis', 'Forecast',
-                'Vs', 'Versus', 'Via', 'Says', 'Said', 'About', 'After', 'Before',
-                'High', 'Low', 'Record', 'Close', 'Open', 'Gain', 'Loss',
-                'Very', 'Mostly', 'Mainly', 'Just', 'Only', 'Even', 'Still',
-                'Review', 'Outlook', 'Summary', 'Brief', 'Headline',
-                '상승', '하락', '특징주', '전망', '분석', '마감', '오전', '오후', '속보', '종목',
-                '오늘', '내일', '이번', '지난', '관련', '대해', '대한', '통해',
-                # Indices & Broad Regions to exclude per User Request
-                'Nasdaq', 'NASDAQ', 'Kospi', 'KOSPI', 'Kosdaq', 'KOSDAQ', 'Dow', 'Jones', 'S&P', 'SPX',
-                'European', 'Europe', 'Asian', 'Asia', 'American', 'America', 'Global', 'World',
-                'Wall', 'Street', 'Futures', 'Index', 'Indices', 'ETF', 'ETFs',
-                # Time units (Explicitly requested to exclude)
-                'Day', 'Days', 'Week', 'Weeks', 'Month', 'Months', 'Year', 'Years', 'Annual', 'Quarter', 'Quarterly'
-            ])
-            
-            wc = WordCloud(
-                font_path='malgun.ttf', 
-                width=800, 
-                height=350, 
-                background_color='white',
-                colormap='Spectral', # 좀 더 다채로운 색상
-                stopwords=stopwords,
-                regexp=r"\w[\w']+", # 기본 토크나이저 사용 (이미 텍스트를 정제했으므로)
-                collocations=False # 단어 중복 방지 (Bigram 끄기)
-            )
-            wc.generate(filtered_text)
-
-            st.markdown("##### ☁️ Market Issue Keyword (시장 핵심 명사/테마)")
-            st.image(wc.to_array(), use_container_width=True)
-            
-        except Exception as e:
-            # st.error(f"WordCloud Error: {e}")
-            pass
-            
-    if global_events:
-
-        for n in global_events:
-            # 날짜 포맷팅
-            try:
-                dt = datetime.strptime(n['published'], "%a, %d %b %Y %H:%M:%S %Z")
-                date_str = dt.strftime("%Y-%m-%d %H:%M")
-            except:
-                date_str = ""
-            
-            # 태그 분석
-            tags = get_news_tags(n['title'])
-            tag_html = ""
-            for t_text, t_bg, t_col in tags:
-                tag_html += f"<span style='background-color:{t_bg}; color:{t_col}; padding: 2px 6px; border-radius: 4px; font-size: 11px; margin-right: 4px; font-weight: bold;'>{t_text}</span>"
-            
-            # 카드 스타일 (조금 더 강조된 디자인)
-            st.markdown(f"""
-            <div style="padding: 12px; border-left: 4px solid #FF5050; background-color: #fff; box-shadow: 0 1px 3px rgba(0,0,0,0.1); margin-bottom: 10px;">
-                <a href="{n['link']}" target="_blank" style="text-decoration: none; color: #111; font-weight: bold; font-size: 15px;">{n['title']}</a>
-                <br><div style="margin-top: 6px;">{tag_html} <span style="color: #666; font-size: 12px;">{n['source']} | {date_str}</span></div>
-            </div>
-            """, unsafe_allow_html=True)
-    else:
-        st.write("현재 감지된 주요 이벤트가 없습니다.")
-
-    st.markdown("---")
-
-    # 2. Global IB House View (대체된 기능)
-    st.markdown("#### 2. Global IB House View (Wall St. Insight)")
-    st.info("💡 월가 주요 투자은행(IB)들의 최신 시장 전망 및 전략 리포트 요약")
-
-    ib_banks = {
-        "JP Morgan": "https://upload.wikimedia.org/wikipedia/commons/thumb/0/07/J_P_Morgan_Chase_Logo_2008_1.svg/1200px-J_P_Morgan_Chase_Logo_2008_1.svg.png",
-        "Goldman Sachs": "https://upload.wikimedia.org/wikipedia/commons/thumb/6/61/Goldman_Sachs.svg/1200px-Goldman_Sachs.svg.png",
-        "Morgan Stanley": "https://upload.wikimedia.org/wikipedia/commons/thumb/3/34/Morgan_Stanley_Logo_1.svg/1200px-Morgan_Stanley_Logo_1.svg.png"
-    }
-    
-    cols = st.columns(3)
-    for i, (bank, logo_url) in enumerate(ib_banks.items()):
-        with cols[i]:
-            st.markdown(f"**🏦 {bank}**")
-            # st.image(logo_url, width=100) # 로고는 링크 깨질 수 있으므로 텍스트로 대체하거나 유지
-            
-            news = fetch_ib_news(bank)
-            if news:
-                for n in news:
-                    # 날짜 포맷팅 깔끔하게
-                    try:
-                        dt = datetime.strptime(n['published'], "%a, %d %b %Y %H:%M:%S %Z")
-                        date_str = dt.strftime("%Y-%m-%d")
-                    except:
-                        date_str = ""
-                    
-                    # 태그 분석
-                    tags = get_news_tags(n['title'])
-                    tag_html = ""
-                    for t_text, t_bg, t_col in tags:
-                        tag_html += f"<span style='background-color:{t_bg}; color:{t_col}; padding: 2px 6px; border-radius: 4px; font-size: 11px; margin-right: 4px; font-weight: bold;'>{t_text}</span>"
-                        
-                    st.markdown(f"""
-                    <div style="padding: 10px; border: 1px solid #e0e0e0; border-radius: 5px; margin-bottom: 10px; background-color: #f9f9f9;">
-                        <a href="{n['link']}" target="_blank" style="text-decoration: none; color: #333; font-weight: bold; font-size: 14px;">{n['title']}</a>
-                        <br><div style="margin-top: 4px;">{tag_html} <span style="color: #666; font-size: 12px;">{n['source']} | {date_str}</span></div>
-                    </div>
-                    """, unsafe_allow_html=True)
-            else:
-                st.caption("최신 관련 뉴스가 없습니다.")
-
-    st.markdown("---")
-
-    # 3. Discussion & Action Plan (회의록 작성)
-    st.markdown("#### 3. Today's Action Plan (회의 기록)")
-    
-    c_memo1, c_memo2 = st.columns(2)
-    with c_memo1:
-        st.text_area("🗣️ Macro View & Issue", height=150, placeholder="예: 미 국채 금리 상승으로 인한 성장주 조정 가능성 논의...")
-    with c_memo2:
-        st.text_area("⚖️ Rebalancing Idea", height=150, placeholder="예: 'AI 반도체' 비중 유지하되, '2차전지' 비중 축소 의견 우세...")
-
-    st.markdown("---")
-
-    # 4. Morning Report Helper (New Feature moved here)
-    with st.expander("📝 Morning Report Helper (데이터 분석 도구)", expanded=False):
-        # 기준 날짜 선택 (오늘이 기본)
-        col_date, col_dummy = st.columns([1, 2])
-        with col_date:
-            target_date = st.date_input("📅 기준 날짜 선택 (이 날짜 기준 수익률 계산)", datetime.now())
-
-        # 템플릿 다운로드 버튼 제공
-        try:
-            with open("universe.xlsx", "rb") as f:
-                btn = st.download_button(
-                    label="📥 유니버스 템플릿 다운로드 (universe.xlsx)",
-                    data=f,
-                    file_name="universe.xlsx",
-                    mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
-                )
-        except: pass
-
-        # 입력 방식 선택
-        input_method = st.radio("데이터 입력 방식 선택", ["📂 엑셀 파일 업로드", "✍️ 티커 직접 입력 (복사/붙여넣기)", "🎁 샘플 데이터 (시연용)"], horizontal=True)
-        
-        df_themes = None
-        df_stocks = None
-        
-        if input_method == "📂 엑셀 파일 업로드":
-            uploaded_file = st.file_uploader("universe.xlsx 업로드", type=['xlsx'])
-            if uploaded_file:
-                try:
-                    uploaded_file.seek(0)
-                    df_themes = pd.read_excel(uploaded_file, sheet_name=0, engine='openpyxl')
-                    try:
-                        df_stocks = pd.read_excel(uploaded_file, sheet_name=1, engine='openpyxl')
-                    except:
-                        df_stocks = None
-                    st.success("파일 로드 성공! (Themes & Stocks)")
-                except Exception as e:
-                    st.error(f"엑셀 로드 오류 (DRM 등): {e}")
-                
-        elif input_method == "✍️ 티커 직접 입력 (복사/붙여넣기)":
-            c1, c2 = st.columns(2)
-            with c1:
-                st.markdown("**1. 슈퍼테마 (ETF)**")
-                txt_theme = st.text_area("티커 입력 (쉼표로 구분)", "396500, LIT, SHLD, 091230", height=100)
-                if txt_theme:
-                    tickers = [t.strip() for t in txt_theme.split(',')]
-                    df_themes = pd.DataFrame({"Ticker": tickers, "Name": tickers, "Theme": ["Manual Input"]*len(tickers)})
-            with c2:
-                st.markdown("**2. 슈퍼스탁 (개별주)**")
-                txt_stock = st.text_area("티커 입력 (쉼표로 구분)", "NVDA, AAPL, 005930, MSFT", height=100)
-                if txt_stock:
-                    tickers = [t.strip() for t in txt_stock.split(',')]
-                    df_stocks = pd.DataFrame({"Ticker": tickers, "Name": tickers, "Sector": ["Manual Input"]*len(tickers)})
-                    
-        elif input_method == "🎁 샘플 데이터 (시연용)":
-            st.caption("※ 발표 시연을 위해 미리 저장된 유니버스 리스트를 사용합니다.")
-            # 샘플 데이터 하드코딩
-            theme_data = [["396500", "TIGER 반도체", "반도체"], ["LIT", "Global X Lithium", "2차전지"], ["SHLD", "Global X Defense", "방산"]]
-            stock_data = [["NVDA", "Nvidia", "Tech"], ["AAPL", "Apple", "Tech"], ["005930", "Samsung Elec", "Tech"]]
-            df_themes = pd.DataFrame(theme_data, columns=["Ticker", "Name", "Theme"])
-            df_stocks = pd.DataFrame(stock_data, columns=["Ticker", "Name", "Sector"])
-            st.success("샘플 데이터 로드 완료 (즉시 분석 가능)")
-        
-        # 분석 실행 UI
-        if df_themes is not None or df_stocks is not None:
-            t1, t2 = st.tabs(["■ 슈퍼테마 (ETF) 결과", "■ 슈퍼스탁 (Stock) 결과"])
-            
-            with t1:
-                if df_themes is not None:
-                    if st.button("테마 데이터 계산 시작 🚀"):
-                        with st.spinner(f"{target_date.strftime('%Y-%m-%d')} 기준 수익률 계산 중..."):
-                            res_theme = calculate_super_theme(df_themes, target_date)
-                            
-                            def color_val(val):
-                                if isinstance(val, (int, float)):
-                                    color = 'red' if val > 0 else 'blue' if val < 0 else 'black'
-                                    return f'color: {color}'
-                                return ''
-                            
-                            st.dataframe(res_theme.style.map(color_val, subset=['1D', '5D', '1M']), use_container_width=True)
-            
-            with t2:
-                if df_stocks is not None:
-                    if st.button("스탁 데이터 계산 시작 🚀"):
-                        with st.spinner(f"{target_date.strftime('%Y-%m-%d')} 기준 데이터 수집 중..."):
-                            res_stock = calculate_super_stock(df_stocks, target_date)
-                            st.dataframe(res_stock, use_container_width=True)
-
 
 # [TAB 2] Super-Stock (StatCounter) - 팀장님 개인 업무
 if menu == "📈 Super-Stock":
@@ -1216,108 +920,147 @@ if menu == "📊 TIMEFOLIO Analysis":
 
     st.markdown("---")
     st.link_button("🌐 공식 상세페이지 바로가기", f"https://timefolioetf.co.kr/m11_view.php?idx={target_idx}")
-# [TAB 3] Earnings Scout
-if menu == "💎 Earnings Scout":
-    st.title("💎 Earnings/Value Scout")
-    st.info("📉 주가는 하락했으나, 🎯 목표주가 괴리율(Upside)이 높은 'Low Price, High Value' 종목을 발굴합니다. (FnGuide 데이터 기반)")
-    st.warning("※ 실적 컨센서스 추이(Trend) 데이터 접근 제한으로, '1개월 변화율' 대신 '목표주가 괴리율(상승여력)'로 대체 분석합니다.")
 
-    # 1. Input Area
-    with st.expander("🛠️ 설정 (Settings)", expanded=True):
-        st.markdown("**분석 대상 종목 코드 (KR)**")
-        # Default: Samsung, Hynix, Hyundai, Kia, POSCO, Naver, Kakao, LG Chem, SDI, SK Innovation, Celltrion
-        default_tickers = "005930, 000660, 005380, 000270, 005490, 035420, 035720, 051910, 006400, 010130, 068270"
-        user_input = st.text_area("종목 코드 입력 (쉼표로 구분)", value=default_tickers, height=70)
-        
-        run_btn = st.button("🚀 분석 시작 (Analyze)", type="primary")
+# [TAB 4] Earnings Idio Score (Goldman Sachs Logic)
+if menu == "💎 Earnings Idio Score":
+    if logic_idio is None:
+        st.error("⚠️ 필수 라이브러리(scikit-learn)가 설치되지 않았습니다. 관리자에게 문의하세요.")
+        st.stop()
 
-    # 2. Analysis Logic
-    if run_btn:
-        tickers = [t.strip() for t in user_input.split(',') if t.strip()]
+    st.title("📈 Earnings Idio Score Dashboard")
+    st.markdown("골드만삭스 방법론 기반: **'실적 발표일 고유 변동성(Alpha)'** 분석")
+    
+    with st.expander("ℹ️ Idio Score 산출 로직 보기 (Goldman Sachs Method)"):
+        st.markdown(r"""
+        **1. 팩터 모델링 (Factor Modeling)**
+        골드만삭스 보고서에 기술된 "시장(Macro) 및 섹터(Sector) 요인 제거" 과정을 수행합니다.
+        (본 대시보드에서는 가장 핵심적인 **Market Beta(S&P 500)**와 **Sector Beta(ETF)** 2-Factor 모델을 사용합니다.)
         
-        results = []
-        progress_bar = st.progress(0)
-        status_text = st.empty()
+        **2. 잔차 수익률 (Residual Return) 계산**
+        $$
+        R_{Stock} = \alpha + \beta_{Mkt} R_{Market} + \beta_{Sec} R_{Sector} + \epsilon
+        $$
+        위 식에서 $\beta$(시장 흐름)로 설명되지 않는 **$\epsilon$ (Idiosyncratic Return)**을 추출합니다.
         
-        for i, ticker in enumerate(tickers):
-            status_text.text(f"🔍 Analyzing {ticker} ({i+1}/{len(tickers)})...")
-            
-            # Call Logic
-            try:
-                data = get_naver_consensus_change(ticker)
-                
-                # logic_earnings now returns 'name' if found.
-                if 'name' in data and data['name']:
-                    data['Name'] = data['name']
+        **3. 최종 점수 (Earnings Alpha Score)**
+        과거 3년 간 **실적 발표일(Earnings Date)**에 발생한 $\epsilon$의 절대값 평균입니다.
+        > **Score = Mean(|$\epsilon_{Earnings}$|) × 100**
+        """)
+
+    # 사이드바: 종목 선택
+    universe_df = logic_idio.load_universe()
+    
+    with st.sidebar:
+        st.header("종목 선택")
+        
+        # --- [NEW] Earnings Calendar Scanner ---
+        st.subheader("📅 Earnings Calendar")
+        target_date = st.date_input("날짜 선택", datetime.now())
+        
+        if st.button("실적 발표 종목 검색"):
+            with st.spinner("Nasdaq.com 조회 중..."):
+                calendar_df = logic_crawler.get_earnings_calendar(target_date.strftime("%Y-%m-%d"))
+                if not calendar_df.empty:
+                    st.session_state['earnings_calendar'] = calendar_df
                 else:
-                    data['Name'] = ticker
-                
-                results.append(data)
-            except Exception as e:
-                st.error(f"{ticker} Error: {e}")
-            
-            progress_bar.progress((i + 1) / len(tickers))
-            
-        status_text.empty()
-        progress_bar.empty()
+                    st.warning("해당 날짜에 예정된 실적 발표가 없거나 데이터를 가져올 수 없습니다.")
+                    st.session_state['earnings_calendar'] = None
         
-        # 3. Visualization
-        if results:
-            res_df = pd.DataFrame(results)
-            
-            # Filter Success only
-            valid_df = res_df[res_df['status'] == 'Success'].copy()
-            
-            if not valid_df.empty:
-                st.success(f"✅ {len(valid_df)}개 종목 분석 완료!")
-                
-                # Show Data
-                st.dataframe(valid_df[['ticker', 'Name', 'price_return_1m', 'eps_change_1m', 'current_eps']])
-                
-                # Scatter Plot
-                # X: Price Return (1M)
-                # Y: EPS Change (1M)
-                
-                fig = px.scatter(
-                    valid_df, 
-                    x='price_return_1m', 
-                    y='eps_change_1m',
-                    text='ticker',
-                    hover_data=['current_eps'],
-                    title="Price Drop vs Upside Potential (Divergence)",
-                    labels={
-                        'price_return_1m': '1M Price Return (%)', 
-                        'eps_change_1m': 'Analyst Upside Potential (%)'
-                    },
-                    color='eps_change_1m',
-                    color_continuous_scale='RdBu_r' # Red for high growth
-                )
-                
-                # Quadrant Lines
-                fig.add_hline(y=0, line_dash="dash", line_color="gray")
-                fig.add_vline(x=0, line_dash="dash", line_color="gray")
-                
-                # Highlight Quadrant 2 (Price < 0, EPS > 0) -> "Hidden Gems"
-                fig.add_shape(type="rect",
-                    x0=-50, y0=0, x1=0, y1=50,
-                    fillcolor="green", opacity=0.1, layer="below", line_width=0,
-                )
-                fig.add_annotation(x=-10, y=10, text="💎 Gem Alert", showarrow=False, font=dict(color="green", size=15))
+        # 지속 표시 (Persistent Display)
+        if st.session_state.get('earnings_calendar') is not None:
+            cal_df = st.session_state['earnings_calendar']
+            st.success(f"{len(cal_df)}개 종목 발견")
+            st.dataframe(cal_df[['Ticker', 'Time', 'Est. EPS']], hide_index=True)
 
-                fig.update_traces(textposition='top center', marker=dict(size=12, line=dict(width=1, color='DarkSlateGrey')))
-                fig.update_layout(height=600)
-                
-                st.plotly_chart(fig, use_container_width=True)
-                
-                # Gem List
-                gems = valid_df[(valid_df['price_return_1m'] < 0) & (valid_df['eps_change_1m'] > 0)]
-                if not gems.empty:
-                    st.markdown("### 💎 Hidden Gems (Price Down, EPS Up)")
-                    st.table(gems[['ticker', 'price_return_1m', 'eps_change_1m']])
+        st.markdown("---")
+        
+        if not universe_df.empty:
+            # 기본 선택 로직 유지
+            pass
+            selected_label = st.selectbox("분석할 종목을 선택하세요:", universe_df['Label'])
+            
+            # 선택된 종목 정보 추출
+            selected_row = universe_df[universe_df['Label'] == selected_label].iloc[0]
+            ticker = selected_row['Ticker']
+            sector = selected_row['Sector']
+            
+            # (Optional) If user wants to type ticker manually (e.g. found in calendar)
+            manual_ticker = st.text_input("직접 티커 입력 (Calendar 참고)", value="")
+            if manual_ticker:
+                ticker = manual_ticker.upper()
+                sector = "지수" # Default for unknown
+        else:
+            st.warning("유니버스 파일(universe_stocks.csv)을 읽을 수 없습니다. 기본값을 사용합니다.")
+            ticker = "AAPL"
+            sector = "정보기술"
+            selected_label = f"Apple ({ticker})"
+        
+        # 섹터에 맞는 벤치마크 자동 선택
+        benchmark_ticker = logic_idio.SECTOR_BENCHMARKS.get(sector, '^GSPC')
+        
+        st.info(f"📌 **티커:** {ticker}\n\n🏭 **섹터:** {sector}\n\n⚖️ **벤치마크:** {benchmark_ticker} (자동설정)")
+        
+        st.markdown("---")
+        st.caption("🔒 보안망 데이터 업로드")
+        uploaded_file = st.file_uploader("전용 데이터 (CSV/Excel)", type=['csv', 'xlsx'])
+
+    # 메인 분석 실행
+    if st.button("Idio Score 분석 시작 🚀"):
+        with st.spinner(f'{ticker} 데이터 분석 중...'):
+            # 1. 데이터 로드 (우선순위: 업로드 파일 > Yahoo Finance)
+            market_data = None
+            
+            if uploaded_file is not None:
+                market_data, err = logic_idio.process_uploaded_file(uploaded_file)
+                if market_data is not None:
+                    st.success("✅ 업로드된 데이터로 분석을 수행합니다.")
                 else:
-                    st.info("💎 이번 분석에서 발견된 'Hidden Gem' 종목이 없습니다.")
-                    
+                    st.error(f"파일 오류: {err}")
             else:
-                st.warning("유효한 데이터가 없습니다. (컨센서스 부재 등)")
-                if not res_df.empty:
-                    st.write("Raw Results:", res_df)
+                market_data = logic_idio.get_market_data(ticker, benchmark_ticker)
+            
+            if market_data is not None:
+                # 점수 계산 (Unpack 4 values)
+                score, earnings_events, beta_mkt, beta_sec = logic_idio.calculate_idio_score(market_data, ticker)
+                
+                # --- 결과 화면 ---
+                
+                # 1. 스코어 카드
+                col1, col2, col3, col4 = st.columns(4)
+                col1.metric("Earnings Idio Score", f"{score:.2f}점", 
+                            delta="High Alpha" if score > 3.0 else "Low Alpha")
+                col2.metric("Market Beta", f"{beta_mkt:.2f}", help="시장(S&P 500) 민감도")
+                col3.metric("Sector Beta", f"{beta_sec:.2f}", help=f"섹터({benchmark_ticker}) 민감도")
+                col4.metric("분석된 이벤트", f"{len(earnings_events)}회")
+                
+                # 2. 인사이트 메시지 (골드만삭스 로직 적용)
+                if score > 4.0:
+                    st.success(f"**🔥 Earnings Mover (실적 민감주):** 이 종목은 실적 발표가 주가에 **매우 강력한 영향**을 미칩니다. (시장/섹터와 무관하게 평균 **{score:.1f}%** 급등락)")
+                elif score < 2.0:
+                    st.warning(f"**🛡️ Stable Stock (실적 무풍지대):** 이 종목은 실적 발표 날에도 시장 흐름을 따르며, 독자적인 변동성이 적습니다.")
+                
+                st.divider()
+
+                # 3. 그래프: Alpha vs Beta 분해
+                st.subheader("📊 실적 발표일 수익률 분해 ")
+                st.caption(f"빨간색 막대(Idio)가 길수록 시장 영향 없이 개별 실적 이슈로만 움직였다는 뜻입니다.")
+
+                try:
+                    fig = go.Figure()
+                    fig.add_trace(go.Bar(x=earnings_events.index, y=earnings_events['Beta_Return'], 
+                                         name='Beta (시장+섹터 효과)', marker_color='lightgray'))
+                    fig.add_trace(go.Bar(x=earnings_events.index, y=earnings_events['Idio_Return'], 
+                                         name='Idio (고유 실적 반응)', marker_color='#E31837')) # 골드만 레드
+                    
+                    fig.update_layout(barmode='relative', title="Earnings Day Return Decomposition", xaxis_title="날짜", yaxis_title="수익률")
+                    st.plotly_chart(fig, use_container_width=True)
+                except Exception as e:
+                    st.error(f"차트 생성 오류: {e}")
+                
+                # 4. 상세 데이터
+                with st.expander("🔎 상세 데이터 보기"):
+                    if not earnings_events.empty:
+                        # Display all relevant columns
+                        st.dataframe(earnings_events[['Market', 'Sector', 'Stock', 'Beta_Return', 'Idio_Return']].style.format("{:.2%}").background_gradient(subset=['Idio_Return'], cmap='RdBu'))
+            else:
+                st.error("데이터 로드에 실패했습니다. 티커를 확인하거나 잠시 후 다시 시도해주세요.")
