@@ -1,0 +1,129 @@
+﻿Ticker,Name,Sector
+WDC,Western Digital,정보기술
+MU,Micron Technology,정보기술
+GOOGL,Alphabet Inc.,커뮤니케이션 서비스
+HII,Huntington Ingalls,산업재
+STX,Seagate Technology,정보기술
+JNJ,Johnson & Johnson,건강관리
+ALB,Albemarle,소재
+CMI,Cummins,산업재
+EXAS,Exact Sciences,건강관리
+TER,Teradyne,정보기술
+RTX,RTX Corporation,산업재
+INTC,Intel,정보기술
+W,Wayfair,자유소비재
+CAT,Caterpillar,산업재
+IQV,IQVIA,건강관리
+HCA,HCA Healthcare,건강관리
+TMO,Thermo Fisher Scientific,건강관리
+ACMR,ACM Research,정보기술
+EA,Electronic Arts,커뮤니케이션 서비스
+ROK,Rockwell Automation,산업재
+LLY,Eli Lilly,건강관리
+FCX,Freeport-McMoRan,소재
+MRK,Merck & Co.,건강관리
+WMT,Walmart,필수소비재
+ADI,Analog Devices,정보기술
+CVNA,Carvana,금융
+IDXX,IDEXX Laboratories,건강관리
+NOC,Northrop Grumman,산업재
+REGN,Regeneron,건강관리
+BMY,Bristol Myers Squibb,건강관리
+GSPC,S&P 500 Index,지수
+LMT,Lockheed Martin,산업재
+AMD,Advanced Micro Devices,정보기술
+RPRX,Royalty Pharma,건강관리
+BIIB,Biogen,건강관리
+U,Unity Software,정보기술
+AAPL,Apple,정보기술
+CSCO,Cisco Systems,정보기술
+NDX,Nasdaq 100 Index,지수
+EW,Edwards Lifesciences,건강관리
+GILD,Gilead Sciences,건강관리
+AMGN,Amgen,건강관리
+BA,Boeing,산업재
+MRNA,Moderna,건강관리
+ROKU,Roku,커뮤니케이션 서비스
+EBAY,eBay,자유소비재
+AXP,American Express,금융
+FSLR,First Solar,정보기술
+DE,Deere & Company,산업재
+MDT,Medtronic,건강관리
+ABBV,AbbVie,건강관리
+ISRG,Intuitive Surgical,건강관리
+SEDG,SolarEdge Technologies,정보기술
+AVGO,Broadcom,정보기술
+TSLA,Tesla,자유소비재
+NVDA,Nvidia,정보기술
+ON,ON Semiconductor,정보기술
+TGT,Target,필수소비재
+NEE,NextEra Energy,유틸리티
+AMZN,Amazon.com,자유소비재
+TTWO,Take-Two Interactive,커뮤니케이션 서비스
+MSCI,MSCI Inc.,정보기술
+TWLO,Twilio,정보기술
+ACN,Accenture,정보기술
+ZM,Zoom Video,정보기술
+MCD,McDonald's,자유소비재
+BRK-B,Berkshire Hathaway,금융
+VRTX,Vertex Pharmaceuticals,건강관리
+SNPS,Synopsys,정보기술
+OKTA,Okta,정보기술
+WY,Weyerhaeuser,부동산
+TRMB,Trimble,정보기술
+APO,Apollo Global Management,금융
+QCOM,Qualcomm,정보기술
+PFE,Pfizer,건강관리
+CRWD,CrowdStrike,정보기술
+PEP,PepsiCo,필수소비재
+ANET,Arista Networks,정보기술
+TXN,Texas Instruments,정보기술
+COST,Costco Wholesale,필수소비재
+DIS,Walt Disney,커뮤니케이션 서비스
+MA,Mastercard,금융
+CDNS,Cadence Design Systems,정보기술
+UBER,Uber Technologies,산업재
+PANW,Palo Alto Networks,정보기술
+SNOW,Snowflake,정보기술
+CEG,Constellation Energy,유틸리티
+MRVL,Marvell Technology,정보기술
+DASH,DoorDash,자유소비재
+DXCM,DexCom,건강관리
+ABT,Abbott Laboratories,건강관리
+V,Visa,금융
+PTON,Peloton Interactive,자유소비재
+UNH,UnitedHealth Group,건강관리
+SNAP,Snap Inc.,커뮤니케이션 서비스
+ENPH,Enphase Energy,정보기술
+BSX,Boston Scientific,건강관리
+ZBH,Zimmer Biomet,건강관리
+CRM,Salesforce,정보기술
+MSFT,Microsoft,정보기술
+META,Meta Platforms,커뮤니케이션 서비스
+RBLX,Roblox,커뮤니케이션 서비스
+CMCSA,Comcast,커뮤니케이션 서비스
+DDOG,Datadog,정보기술
+PINS,Pinterest,커뮤니케이션 서비스
+GPN,Global Payments,금융
+BBY,Best Buy,자유소비재
+COIN,Coinbase Global,금융
+RSG,Republic Services,산업재
+CCI,Crown Castle,부동산
+DOCU,DocuSign,정보기술
+NFE,New Fortress Energy,에너지
+FTNT,Fortinet,정보기술
+GTLB,GitLab,정보기술
+TDOC,Teladoc Health,건강관리
+ZS,Zscaler,정보기술
+FIS,Fidelity National Info,금융
+ADBE,Adobe,정보기술
+SWKS,Skyworks Solutions,정보기술
+WDAY,Workday,정보기술
+INTU,Intuit,정보기술
+FISV,Fiserv,금융
+TYL,Tyler Technologies,정보기술
+NFLX,Netflix,커뮤니케이션 서비스
+TEAM,Atlassian,정보기술
+PYPL,PayPal,금융
+TTD,The Trade Desk,커뮤니케이션 서비스
+NOW,ServiceNow,정보기술
