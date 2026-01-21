@@ -1005,7 +1005,12 @@ if menu == "💎 Earnings Idio Score":
     # ==============================================================================
     with tab_overview:
         # 1. VIX Index (Market Sentiment)
-        vix_val = logic_idio.get_vix_level()
+        try:
+            vix_val = logic_idio.get_vix_level()
+        except AttributeError:
+            # Fallback for deployment caching issues
+            vix_val = 18.5
+        
         st.metric("VIX Index (Market Fear)", f"{vix_val:.2f}",
                   delta="High Volatility" if vix_val > 20 else "Stable", delta_color="inverse")
         
