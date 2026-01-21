@@ -962,15 +962,12 @@ if menu == "💎 Earnings Idio Score":
                 calendar_df = logic_crawler.get_earnings_calendar(target_date.strftime("%Y-%m-%d"))
                 if not calendar_df.empty:
                     st.session_state['earnings_calendar'] = calendar_df
+                    st.session_state['batch_results'] = None # Reset previous batch results
+                    st.success(f"✅ {len(calendar_df)}개 발견! 우측 대시보드에서 확인하세요.")
                 else:
                     st.warning("해당 날짜에 예정된 실적 발표가 없거나 데이터를 가져올 수 없습니다.")
                     st.session_state['earnings_calendar'] = None
-        
-        # 지속 표시 (Persistent Display)
-        if st.session_state.get('earnings_calendar') is not None:
-            cal_df = st.session_state['earnings_calendar']
-            st.success(f"{len(cal_df)}개 종목 발견")
-            st.dataframe(cal_df[['Ticker', 'Time', 'Est. EPS']], hide_index=True)
+                    st.session_state['batch_results'] = None
 
         st.markdown("---")
         
@@ -1000,37 +997,168 @@ if menu == "💎 Earnings Idio Score":
         
         st.info(f"📌 **티커:** {ticker}\n\n🏭 **섹터:** {sector}\n\n⚖️ **벤치마크:** {benchmark_ticker} (자동설정)")
         
+    # --- [Tabs Layout] ---
+    tab_overview, tab_deepdive = st.tabs(["📊 Overview", "🔍 Deep Dive"])
+    
+    # ==============================================================================
+    # TAB 1: Overview (Dashboard)
+    # ==============================================================================
+    with tab_overview:
+        # 1. VIX Index (Market Sentiment)
+        vix_val = logic_idio.get_vix_level()
+        st.metric("VIX Index (Market Fear)", f"{vix_val:.2f}",
+                  delta="High Volatility" if vix_val > 20 else "Stable", delta_color="inverse")
+        
+        st.divider()
+        
+        # 2. Earnings Calendar & Batch Analysis
+        st.subheader("📅 Earnings Calendar Analysis")
+        
+        # Load from Session (set by Sidebar)
+        cal_df = st.session_state.get('earnings_calendar')
+        
+        if cal_df is not None and not cal_df.empty:
+            st.caption("사이드바에서 검색한 종목 리스트입니다. 버튼을 누르면 Idio Score를 일괄 계산합니다.")
+            
+            if st.button("실적 발표 종목 일괄 분석 (Batch Run) 🚀"):
+                # Progress Bar
+                progress_bar = st.progress(0)
+                status_text = st.empty()
+                
+                results = []
+                
+                # Limit to top 20 for performance
+                targets = cal_df['Ticker'].head(20).tolist()
+                
+                for i, t in enumerate(targets):
+                    status_text.text(f"Analyzing {t} ({i+1}/{len(targets)})...")
+                    
+                    # 1. Get Data (Try Hybrid if uploaded, else Default)
+                    # For batch, we assume Default (Synthetic) or simple fallback unless Benchmark is globally loaded
+                    # But if Hybrid file is uploaded, process_benchmark_file stores nothing in session?
+                    # We need to re-read uploaded file? 
+                    # Simpler approach: Just use get_market_data (Synthetic/Live) for Overview
+                    # unless we implemented global session storage for benchmark.
+                    # Let's use standard get_market_data fallback for now.
+                    
+                    try:
+                        m_data = logic_idio.get_market_data(t, '^GSPC') # Default Benchmark
+                        if m_data is not None:
+                            # score, events, beta_mkt, beta_sec, ann_ret, ann_vol
+                            scr, _, _, _, a_ret, a_vol = logic_idio.calculate_idio_score(m_data, t)
+                            results.append({
+                                'Ticker': t,
+                                'Idio Score': scr,
+                                'Efficiency': 'High' if scr > 1.5 else 'Low',
+                                'Ann. Return': a_ret,
+                                'Ann. Vol': a_vol
+                            })
+                    except:
+                         pass
+                    
+                    progress_bar.progress((i + 1) / len(targets))
+                
+                status_text.text("Analysis Complete!")
+                
+                # Update Session with Results
+                res_df = pd.DataFrame(results)
+                if not res_df.empty:
+                    # Merge with original calendar info (Time, Est EPS)
+                    final_df = pd.merge(cal_df, res_df, on='Ticker', how='inner')
+                    final_df = final_df.sort_values(by='Idio Score', ascending=False)
+                    st.session_state['batch_results'] = final_df
+            
+            # Display Results if available
+            if st.session_state.get('batch_results') is not None:
+                st.dataframe(st.session_state['batch_results'].style.background_gradient(subset=['Idio Score'], cmap='Reds'), hide_index=True)
+            else:
+                # Show placeholder column
+                display_df = cal_df.copy()
+                display_df['Idio Score'] = "-"
+                st.dataframe(display_df, hide_index=True)
+                
+        else:
+            st.info("👈 사이드바에서 'Earnings Calendar' 날짜를 선택하고 검색해주세요.")
+
+
+    # ==============================================================================
+    # TAB 2: Deep Dive (Individual Analysis)
+    # ==============================================================================
+    with tab_deepdive:
+        st.caption("개별 종목에 대한 심층 분석 리포트입니다.")
+        
         st.markdown("---")
         st.caption("🔒 보안망 데이터 업로드")
-        uploaded_file = st.file_uploader("전용 데이터 (CSV/Excel)", type=['csv', 'xlsx'])
+        # Rename to indicate it can be Benchmark Only or Full
+        uploaded_file = st.file_uploader("데이터 파일 (전체 또는 S&P500만)", type=['csv', 'xlsx'])
+        
+        if uploaded_file:
+            st.info("Tip: 'Market'(S&P500) 컬럼만 있는 파일을 올리면, 개별 종목 주가는 실시간으로 가져와서 분석합니다. (Hybrid Mode)")
 
     # 메인 분석 실행
     if st.button("Idio Score 분석 시작 🚀"):
         with st.spinner(f'{ticker} 데이터 분석 중...'):
-            # 1. 데이터 로드 (우선순위: 업로드 파일 > Yahoo Finance)
+            # 1. 데이터 로드 로직 (우선순위: Full Upload > Hybrid > Synthetic)
             market_data = None
+            grade = "Synthetic" # Data Quality Grade
             
             if uploaded_file is not None:
-                market_data, err = logic_idio.process_uploaded_file(uploaded_file)
-                if market_data is not None:
-                    st.success("✅ 업로드된 데이터로 분석을 수행합니다.")
+                # 1-A. Try processing as Full File (Stock+Market+Sector)
+                full_data, err = logic_idio.process_uploaded_file(uploaded_file)
+                
+                if full_data is not None:
+                    market_data = full_data
+                    grade = "Real (Full Upload)"
+                    st.success("✅ [Full Mode] 업로드된 전체 데이터로 분석합니다.")
                 else:
-                    st.error(f"파일 오류: {err}")
-            else:
+                    # 1-B. Try Hybrid Mode (Benchmark Only + Live Stock)
+                    # Reset stream position if possible, or re-read? Streamlit handles this usually, but safe to reload
+                    uploaded_file.seek(0) 
+                    bench_data, b_err = logic_idio.process_benchmark_file(uploaded_file)
+                    
+                    if bench_data is not None:
+                        # Fetch Live Stock Data
+                        st.info("🔄 [Hybrid Mode] 벤치마크 파일 인식됨. 개별 주가 수집 중...")
+                        stock_df = logic_crawler.fetch_historical_price(ticker)
+                        
+                        if not stock_df.empty:
+                            # Calculate Returns for Stock
+                            stock_ret = stock_df.pct_change().dropna()
+                            
+                            # Merge (Inner Join on Date)
+                            # bench_data has Returns, stock_ret has Returns
+                            merged = bench_data.join(stock_ret, how='inner').dropna()
+                            
+                            if not merged.empty and 'Stock' in merged.columns:
+                                market_data = merged
+                                grade = "Real (Hybrid)"
+                                st.success(f"✅ [Hybrid Mode] S&P500(파일) + {ticker}(Live) 결합 완료! ({len(merged)}일)")
+                            else:
+                                st.error("날짜가 겹치는 데이터가 없습니다.")
+                        else:
+                            st.error(f"{ticker} 실시간 데이터 수집 실패. (Nasdaq API)")
+                    else:
+                        st.error(f"파일 1차 오류: {err}\n파일 2차 오류(Hybrid): {b_err}")
+            
+            # 2. Fallback to Synthetic if still None
+            if market_data is None:
                 market_data = logic_idio.get_market_data(ticker, benchmark_ticker)
             
             if market_data is not None:
-                # 점수 계산 (Unpack 4 values)
-                score, earnings_events, beta_mkt, beta_sec = logic_idio.calculate_idio_score(market_data, ticker)
+                # 점수 계산 (Unpack 6 values)
+                score, earnings_events, beta_mkt, beta_sec, ann_ret, ann_vol = logic_idio.calculate_idio_score(market_data, ticker)
                 
                 # --- 결과 화면 ---
                 
                 # 1. 스코어 카드
                 col1, col2, col3, col4 = st.columns(4)
-                col1.metric("Earnings Idio Score", f"{score:.2f}점", 
-                            delta="High Alpha" if score > 3.0 else "Low Alpha")
-                col2.metric("Market Beta", f"{beta_mkt:.2f}", help="시장(S&P 500) 민감도")
-                col3.metric("Sector Beta", f"{beta_sec:.2f}", help=f"섹터({benchmark_ticker}) 민감도")
+                col1.metric("Earnings Idio Score", f"{score:.2f}", 
+                            delta="High Efficiency" if score > 1.5 else "Low Efficiency",
+                            help="단위 위험당 초과수익 (Return / Volatility). 높을수록 '확실하게' 움직입니다.")
+                
+                col2.metric("Ann. Idio Return", f"{ann_ret:.1f}%", help="연율화된 실적발표 Alpha 수익률 (절대값)")
+                col3.metric("Ann. Idio Volatility", f"{ann_vol:.1f}%", help="연율화된 실적발표 Volatility")
+                
                 col4.metric("분석된 이벤트", f"{len(earnings_events)}회")
                 
                 # 2. 인사이트 메시지 (골드만삭스 로직 적용)

@@ -67,3 +67,45 @@ def get_earnings_calendar(date_str=None):
     except Exception as e:
         st.error(f"Crawling Error: {e}")
         return pd.DataFrame()
+
+@st.cache_data(ttl=3600)
+def fetch_historical_price(ticker):
+    """
+    Fetch 3-year daily historical price (Close) for a ticker from Nasdaq.
+    Returns DataFrame with index 'Date' and column 'Stock'.
+    """
+    try:
+        # User Agent is critical
+        headers = HEADERS
+        
+        to_date = datetime.datetime.now().strftime("%Y-%m-%d")
+        from_date = (datetime.datetime.now() - datetime.timedelta(days=365*3)).strftime("%Y-%m-%d")
+        
+        url = f"https://api.nasdaq.com/api/quote/{ticker}/historical?assetclass=stocks&fromdate={from_date}&todate={to_date}&limit=9999"
+        
+        response = requests.get(url, headers=headers, verify=False, timeout=10)
+        
+        if response.status_code == 200:
+            data = response.json()
+            if data and data.get('data') and data['data'].get('tradesTable') and data['data']['tradesTable'].get('rows'):
+                rows = data['data']['tradesTable']['rows']
+                df = pd.DataFrame(rows)
+                
+                # Cleaning
+                # Columns: date, close, volume, open, high, low
+                df = df.rename(columns={'date': 'Date', 'close': 'Stock'})
+                df['Date'] = pd.to_datetime(df['Date'])
+                
+                # Clean price string ($ sign)
+                df['Stock'] = df['Stock'].astype(str).str.replace('$', '').str.replace(',', '').astype(float)
+                
+                df.set_index('Date', inplace=True)
+                df.sort_index(inplace=True)
+                
+                return df[['Stock']]
+            else:
+                return pd.DataFrame()
+        return pd.DataFrame()
+    except Exception as e:
+        st.error(f"Price Fetch Error: {e}")
+        return pd.DataFrame()

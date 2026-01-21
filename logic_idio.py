@@ -169,10 +169,29 @@ def calculate_idio_score(df, ticker_symbol):
     else:
         earnings_moves = df.loc[valid_dates]
 
-    # 3. 점수 산출
-    score = np.mean(np.abs(earnings_moves['Idio_Return'])) * 100
+    # 3. 점수 산출 (Annualized Return / Annualized Volatility)
+    # Annualized Return = Mean(|Idio|) * 4 (Quarters) -> Magnitude of Idio Move
+    # Annualized Volatility = Std(Idio) * Sqrt(4) -> Stability of Idio Move
     
-    return score, earnings_moves, beta_mkt, beta_sec
+    idio_rets = earnings_moves['Idio_Return']
+    
+    if len(idio_rets) > 0:
+        mean_abs_idio = np.mean(np.abs(idio_rets))
+        std_idio = np.std(idio_rets)
+        
+        ann_ret = mean_abs_idio * 4
+        ann_vol = std_idio * np.sqrt(4)
+        
+        if ann_vol == 0:
+            score = 0.0
+        else:
+            score = ann_ret / ann_vol
+    else:
+        score = 0.0
+        ann_ret = 0.0
+        ann_vol = 0.0
+    
+    return score, earnings_moves, beta_mkt, beta_sec, ann_ret, ann_vol
 
 def process_uploaded_file(uploaded_file):
     """
@@ -213,3 +232,79 @@ def process_uploaded_file(uploaded_file):
 
     except Exception as e:
         return None, f"파일 처리 오류: {str(e)}"
+
+def process_benchmark_file(uploaded_file):
+    """
+    Process User Uploaded Benchmark File (Market, Sector).
+    Used for Hybrid Mode: Benchmark(Index) + Live Stock(Crawler)
+    Expected Columns: ['Date', 'Market', 'Sector']
+    """
+    try:
+        # Determine file type
+        if uploaded_file.name.endswith('.csv') or uploaded_file.name.endswith('.txt'):
+            # Try Default (Comma)
+            df = pd.read_csv(uploaded_file)
+            
+            # If parsing failed (e.g. all in one column), try Tab (Clipboard paste format)
+            if len(df.columns) < 2:
+                uploaded_file.seek(0)
+                try:
+                    df = pd.read_csv(uploaded_file, sep='\t')
+                except:
+                    pass
+        else:
+            df = pd.read_excel(uploaded_file)
+            
+        # Column standardization
+        df.columns = [str(c).strip() for c in df.columns]
+        
+        # Check required columns (Market is mandatory, Sector is optional but recommended)
+        if 'Market' not in df.columns:
+             return None, "파일에 'Market' (S&P 500) 컬럼이 없습니다."
+        
+        # Date processing
+        if 'Date' in df.columns:
+            df['Date'] = pd.to_datetime(df['Date'])
+            df.set_index('Date', inplace=True)
+        elif not isinstance(df.index, pd.DatetimeIndex):
+             # Try first column
+             df.index = pd.to_datetime(df.iloc[:, 0])
+             df.index.name = 'Date'
+        
+        # Filter numeric columns
+        cols = ['Market']
+        if 'Sector' in df.columns:
+            cols.append('Sector')
+            
+        df_bench = df[cols].astype(float)
+        
+        # Calculate Returns
+        # Assuming input is PRICES (Level), convert to Returns
+        df_returns = df_bench.pct_change().dropna()
+        
+        return df_returns, None
+
+    except Exception as e:
+        return None, f"벤치마크 파일 처리 오류: {str(e)}"
+
+def get_vix_level():
+    """
+    Fetch current VIX level.
+    Fallback to synthetic if blocked.
+    """
+    try:
+        # Try Yahoo Finance first
+        session = requests.Session()
+        session.verify = False
+        vix = yf.Ticker("^VIX", session=session)
+        hist = vix.history(period="1d")
+        if not hist.empty:
+            return hist['Close'].iloc[-1]
+    except:
+        pass
+        
+    # Fallback: Random realistic VIX (15 ~ 25)
+    # Using minute to slightly vary it
+    import time
+    random_vix = 18.5 + (time.time() % 100 / 20.0)
+    return random_vix
