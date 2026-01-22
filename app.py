@@ -5,7 +5,7 @@ import FinanceDataReader as fdr
 import requests
 import urllib3
 from io import StringIO, BytesIO
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, date
 import yfinance as yf
 import feedparser
 import numpy as np
@@ -932,19 +932,24 @@ if menu == "💎 Earnings Idio Score":
     
     with st.expander("ℹ️ Idio Score 산출 로직 보기 (Goldman Sachs Method)"):
         st.markdown(r"""
-        **1. 팩터 모델링 (Factor Modeling)**
-        골드만삭스 보고서에 기술된 "시장(Macro) 및 섹터(Sector) 요인 제거" 과정을 수행합니다.
-        (본 대시보드에서는 가장 핵심적인 **Market Beta(S&P 500)**와 **Sector Beta(ETF)** 2-Factor 모델을 사용합니다.)
+        **1. 5-Factor Modeling**
+        시장(Market), 섹터(Sector) 뿐만 아니라 스타일(Size, Value, Momentum) 요인까지 모두 제거하여
+        순수한 종목 고유의 움직임(Idiosyncratic Return)을 추출합니다.
         
-        **2. 잔차 수익률 (Residual Return) 계산**
+        **2. Regression Model (Trailing 3 Years)**
         $$
-        R_{Stock} = \alpha + \beta_{Mkt} R_{Market} + \beta_{Sec} R_{Sector} + \epsilon
+        R_{i,t} = \alpha + \beta_{Mkt}Mkt_t + \beta_{Sec}Sec_t + \beta_{SMB}SMB_t + \beta_{HML}HML_t + \beta_{Mom}MOM_t + \epsilon_{i,t}
         $$
-        위 식에서 $\beta$(시장 흐름)로 설명되지 않는 **$\epsilon$ (Idiosyncratic Return)**을 추출합니다.
+        *   $Mkt$: S&P 500 (SPY Adj Close)
+        *   $Sec$: Sector ETF (e.g., XLK)
+        *   $SMB/HML/MOM$: Fama-French Style Factors
         
-        **3. 최종 점수 (Earnings Alpha Score)**
-        과거 3년 간 **실적 발표일(Earnings Date)**에 발생한 $\epsilon$의 절대값 평균입니다.
-        > **Score = Mean(|$\epsilon_{Earnings}$|) × 100**
+        **3. 최종 점수 (Earnings Idio Score)**
+        실적 발표일(Event Dates)에 발생한 잔차($\epsilon$)의 효율성을 측정합니다.
+        $$
+        \text{Score} = \frac{\text{Mean}(|Daily Idio Return|)}{\text{Std}(Daily Idio Return)}
+        $$
+        (연율화 없이 일별 수치 그대로 사용하여, 변동성 대비 수익 효율을 측정함)
         """)
 
     # 사이드바: 종목 선택
@@ -995,7 +1000,7 @@ if menu == "💎 Earnings Idio Score":
         # 섹터에 맞는 벤치마크 자동 선택
         benchmark_ticker = logic_idio.SECTOR_BENCHMARKS.get(sector, '^GSPC')
         
-        st.info(f"📌 **티커:** {ticker}\n\n🏭 **섹터:** {sector}\n\n⚖️ **벤치마크:** {benchmark_ticker} (자동설정)")
+        st.info(f"📌 **티커:** {ticker}\n\n🏭 **섹터:** {sector}\n\n⚖️ **벤치마크:** {benchmark_ticker}")
         
     # --- [Tabs Layout] ---
     tab_overview, tab_deepdive = st.tabs(["📊 Overview", "🔍 Deep Dive"])
@@ -1032,34 +1037,46 @@ if menu == "💎 Earnings Idio Score":
                 
                 results = []
                 
-                # Limit to top 20 for performance
-                targets = cal_df['Ticker'].head(20).tolist()
+                # Process ALL tickers (removing .head(20) limit)
+                targets = cal_df['Ticker'].tolist()
                 
                 for i, t in enumerate(targets):
                     status_text.text(f"Analyzing {t} ({i+1}/{len(targets)})...")
                     
-                    # 1. Get Data (Try Hybrid if uploaded, else Default)
-                    # For batch, we assume Default (Synthetic) or simple fallback unless Benchmark is globally loaded
-                    # But if Hybrid file is uploaded, process_benchmark_file stores nothing in session?
-                    # We need to re-read uploaded file? 
-                    # Simpler approach: Just use get_market_data (Synthetic/Live) for Overview
-                    # unless we implemented global session storage for benchmark.
-                    # Let's use standard get_market_data fallback for now.
-                    
                     try:
-                        m_data = logic_idio.get_market_data(t, '^GSPC') # Default Benchmark
+                        m_data = logic_idio.get_market_data(t, '^GSPC') 
                         if m_data is not None:
-                            # score, events, beta_mkt, beta_sec, ann_ret, ann_vol
-                            scr, _, _, _, a_ret, a_vol = logic_idio.calculate_idio_score(m_data, t)
+                            # Enrich with Sector/Style
+                            m_data = logic_idio.enrich_with_factors(m_data, t)
+                            
+                            # score, events, betas, daily_ret, daily_vol, comp_stats
+                            scr, _, _, d_ret, d_vol, _ = logic_idio.calculate_idio_score(m_data, t)
                             results.append({
                                 'Ticker': t,
                                 'Idio Score': scr,
-                                'Efficiency': 'High' if scr > 1.5 else 'Low',
-                                'Ann. Return': a_ret,
-                                'Ann. Vol': a_vol
+                                # 'Efficiency' removed
+                                'Avg Daily Returns': d_ret,
+                                'Daily Volatility': d_vol,
+                                'Status': 'Success'
                             })
-                    except:
-                         pass
+                        else:
+                            # Data Fetch Fail
+                            results.append({
+                                'Ticker': t,
+                                'Idio Score': 0.0,
+                                'Avg Daily Returns': 0.0,
+                                'Daily Volatility': 0.0,
+                                'Status': 'Data Fail'
+                            })
+                    except Exception as e:
+                        # Logic Error
+                         results.append({
+                            'Ticker': t,
+                            'Idio Score': 0.0,
+                            'Avg Daily Returns': 0.0,
+                            'Daily Volatility': 0.0,
+                            'Status': f'Error: {str(e)}'
+                        })
                     
                     progress_bar.progress((i + 1) / len(targets))
                 
@@ -1093,12 +1110,39 @@ if menu == "💎 Earnings Idio Score":
         st.caption("개별 종목에 대한 심층 분석 리포트입니다.")
         
         st.markdown("---")
-        st.caption("🔒 보안망 데이터 업로드")
-        # Rename to indicate it can be Benchmark Only or Full
-        uploaded_file = st.file_uploader("데이터 파일 (전체 또는 S&P500만)", type=['csv', 'xlsx'])
+        st.subheader("1. Market Data (Benchmark)")
         
-        if uploaded_file:
-            st.info("Tip: 'Market'(S&P500) 컬럼만 있는 파일을 올리면, 개별 종목 주가는 실시간으로 가져와서 분석합니다. (Hybrid Mode)")
+        st.subheader("1. Market Data (Benchmark)")
+        
+        st.info("📡 Yahoo Finance에서 SPY(S&P 500) 데이터를 자동으로 가져옵니다.")
+        
+        # Always Auto (SPY Proxy)
+        market_data_source = logic_idio.fetch_spy_proxy()
+        
+        if market_data_source is not None:
+            st.success("✅ SPY 데이터 확보 완료! (Hybrid Mode 동작)")
+        else:
+            st.warning("⚠️ SPY 데이터 수집 실패. 시연용 가상 데이터(Synthetic)가 사용될 수 있습니다.")
+        
+        uploaded_file = None # No file upload anymore
+        
+        st.divider()
+        
+        # 2. Earnings Calendar
+        st.subheader("2. Earnings Calendar (Nasdaq)")
+        target_date = st.date_input("날짜 선택", date.today())
+        
+        if st.button("실적 발표 종목 검색 🔍"):
+            with st.spinner("Nasdaq.com 검색 중..."):
+                calendar_df = logic_crawler.get_earnings_calendar(target_date.strftime("%Y-%m-%d"))
+                if not calendar_df.empty:
+                    st.session_state['earnings_calendar'] = calendar_df
+                    st.session_state['batch_results'] = None # Reset previous batch results
+                    st.success(f"✅ {len(calendar_df)}개 발견! 우측 대시보드에서 확인하세요.")
+                else:
+                    st.warning("해당 날짜에 예정된 실적 발표가 없거나 데이터를 가져올 수 없습니다.")
+                    st.session_state['earnings_calendar'] = None
+                    st.session_state['batch_results'] = None
 
     # 메인 분석 실행
     if st.button("Idio Score 분석 시작 🚀"):
@@ -1107,65 +1151,113 @@ if menu == "💎 Earnings Idio Score":
             market_data = None
             grade = "Synthetic" # Data Quality Grade
             
-            if uploaded_file is not None:
-                # 1-A. Try processing as Full File (Stock+Market+Sector)
-                full_data, err = logic_idio.process_uploaded_file(uploaded_file)
-                
-                if full_data is not None:
-                    market_data = full_data
+            # Use market_data_source from the radio button selection
+            if market_data_source is not None:
+                # If market_data_source is already a full dataset (from uploaded file)
+                if 'Stock' in market_data_source.columns and 'Market' in market_data_source.columns:
+                    market_data = market_data_source
                     grade = "Real (Full Upload)"
                     st.success("✅ [Full Mode] 업로드된 전체 데이터로 분석합니다.")
                 else:
-                    # 1-B. Try Hybrid Mode (Benchmark Only + Live Stock)
-                    # Reset stream position if possible, or re-read? Streamlit handles this usually, but safe to reload
-                    uploaded_file.seek(0) 
-                    bench_data, b_err = logic_idio.process_benchmark_file(uploaded_file)
+                    # Hybrid Mode: market_data_source is Benchmark (Market/Sector)
+                    bench_data = market_data_source
+                    st.info(f"🔄 [Hybrid Mode] 벤치마크 데이터 확보 ({len(bench_data)}일). {ticker} 개별 주가 수집 중...")
                     
-                    if bench_data is not None:
-                        # Fetch Live Stock Data
-                        st.info("🔄 [Hybrid Mode] 벤치마크 파일 인식됨. 개별 주가 수집 중...")
-                        stock_df = logic_crawler.fetch_historical_price(ticker)
+                    stock_df = logic_crawler.fetch_historical_price(ticker)
+                    
+                    if not stock_df.empty:
+                        # Calculate Returns for Stock
+                        stock_ret = stock_df.pct_change().dropna()
                         
-                        if not stock_df.empty:
-                            # Calculate Returns for Stock
-                            stock_ret = stock_df.pct_change().dropna()
-                            
-                            # Merge (Inner Join on Date)
-                            # bench_data has Returns, stock_ret has Returns
-                            merged = bench_data.join(stock_ret, how='inner').dropna()
-                            
-                            if not merged.empty and 'Stock' in merged.columns:
-                                market_data = merged
-                                grade = "Real (Hybrid)"
-                                st.success(f"✅ [Hybrid Mode] S&P500(파일) + {ticker}(Live) 결합 완료! ({len(merged)}일)")
-                            else:
-                                st.error("날짜가 겹치는 데이터가 없습니다.")
+                        # Merge (Inner Join on Date)
+                        merged = bench_data.join(stock_ret, how='inner').dropna()
+                        
+                        if not merged.empty and 'Stock' in merged.columns:
+                            market_data = merged
+                            grade = "Real (Hybrid)"
+                            st.success(f"✅ [Hybrid Mode] S&P500 + {ticker}(Live) 결합 완료! ({len(merged)}일)")
                         else:
-                            st.error(f"{ticker} 실시간 데이터 수집 실패. (Nasdaq API)")
+                            st.error("날짜가 겹치는 데이터가 없습니다. (벤치마크 날짜 확인 필요)")
                     else:
-                        st.error(f"파일 1차 오류: {err}\n파일 2차 오류(Hybrid): {b_err}")
+                        st.error(f"{ticker} 실시간 데이터 수집 실패. (Nasdaq API)")
             
             # 2. Fallback to Synthetic if still None
             if market_data is None:
                 market_data = logic_idio.get_market_data(ticker, benchmark_ticker)
             
             if market_data is not None:
-                # 점수 계산 (Unpack 6 values)
-                score, earnings_events, beta_mkt, beta_sec, ann_ret, ann_vol = logic_idio.calculate_idio_score(market_data, ticker)
+                # 1. Enrich (Multi-Factor)
+                market_data = logic_idio.enrich_with_factors(market_data, ticker)
+                
+                # 2. Calculate (Unpack 6 values)
+                score, earnings_events, betas, d_ret, d_vol, cp = logic_idio.calculate_idio_score(market_data, ticker)
                 
                 # --- 결과 화면 ---
                 
                 # 1. 스코어 카드
-                col1, col2, col3, col4 = st.columns(4)
+                col1, col2, col3, col4, col5 = st.columns(5)
                 col1.metric("Earnings Idio Score", f"{score:.2f}", 
-                            delta="High Efficiency" if score > 1.5 else "Low Efficiency",
-                            help="단위 위험당 초과수익 (Return / Volatility). 높을수록 '확실하게' 움직입니다.")
+                            delta="Positive" if score > 0.5 else "Low",
+                            help="Daily Idio Return / Daily Volatility (No Annualization)")
                 
-                col2.metric("Ann. Idio Return", f"{ann_ret:.1f}%", help="연율화된 실적발표 Alpha 수익률 (절대값)")
-                col3.metric("Ann. Idio Volatility", f"{ann_vol:.1f}%", help="연율화된 실적발표 Volatility")
+                col2.metric("Earnings Mean Return", f"{cp.get('Earnings_Mean', 0.0)*100:.2f}%", help="실적 발표일 평균 절대 수익률")
+                col3.metric("Earnings Volatility", f"{cp.get('Earnings_Vol', 0.0)*100:.2f}%", help="실적 발표일 변동성")
                 
                 col4.metric("분석된 이벤트", f"{len(earnings_events)}회")
+                col5.metric("Factor Model", "5-Factor" if 'MOM' in betas else "4-Factor")
+
+                # 2. Beta Breakdown
+                st.caption("Fama-French Multi-Factor Coefficients")
+                b1, b2, b3, b4, b5 = st.columns(5)
+                b1.metric("Market Beta", f"{betas.get('Market', 0.0):.2f}")
+                b2.metric("Sector Beta", f"{betas.get('Sector', 0.0):.2f}")
+                b3.metric("Size (SMB)", f"{betas.get('SMB', 0.0):.2f}")
+                b4.metric("Value (HML)", f"{betas.get('HML', 0.0):.2f}")
+                b5.metric("Mom (MOM)", f"{betas.get('MOM', 0.0):.2f}")
                 
+                st.divider()
+
+                # 3. Comparative Analysis (New Section)
+                st.subheader("⚖️ Comparative Analysis: Earnings vs Non-Earnings")
+                st.caption("실적 발표일(Earnings Days)과 평상시(Non-Earnings Days)의 고유 변동성을 비교합니다.")
+                
+                c1, c2, c3 = st.columns(3)
+                
+                with c1:
+                    st.markdown("#### Earnings Days")
+                    st.metric("Mean Abs Return", f"{cp.get('Earnings_Mean',0)*100:.2f}%")
+                    st.metric("Volatility", f"{cp.get('Earnings_Vol',0)*100:.2f}%")
+                    st.metric("Count", f"{cp.get('Earnings_Count',0)} days")
+                    
+                with c2:
+                    st.markdown("#### Non-Earnings Days")
+                    st.metric("Mean Abs Return", f"{cp.get('NonEarnings_Mean',0)*100:.2f}%")
+                    st.metric("Volatility", f"{cp.get('NonEarnings_Vol',0)*100:.2f}%")
+                    st.metric("Count", f"{cp.get('NonEarnings_Count',0)} days")
+                    
+                with c3:
+                    st.markdown("#### Impact Multiplier")
+                    vol_ratio = cp.get('Vol_Ratio', 0.0)
+                    st.metric("Volatility Multiplier", f"{vol_ratio:.1f}x", 
+                              delta="High Impact" if vol_ratio > 2.0 else "Normal")
+                    st.info(f"실적 발표 날에는 평소보다 변동성이 **{vol_ratio:.1f}배** 증가합니다.")
+
+                # Comparative Chart
+                comp_df = pd.DataFrame({
+                    'Condition': ['Earnings Days', 'Non-Earnings Days'],
+                    'Volatility': [cp.get('Earnings_Vol', 0.0), cp.get('NonEarnings_Vol', 0.0)],
+                    'Mean Return': [cp.get('Earnings_Mean', 0.0), cp.get('NonEarnings_Mean', 0.0)]
+                })
+                
+                fig_comp = go.Figure(data=[
+                    go.Bar(name='Volatility', x=comp_df['Condition'], y=comp_df['Volatility'], marker_color=['#FF4B4B', '#60b4ff']),
+                    # go.Bar(name='Mean Return', x=comp_df['Condition'], y=comp_df['Mean Return'])
+                ])
+                fig_comp.update_layout(title_text='Volatility Comparison', barmode='group')
+                st.plotly_chart(fig_comp, use_container_width=True)
+
+                st.divider()
+
                 # 2. 인사이트 메시지 (골드만삭스 로직 적용)
                 if score > 4.0:
                     st.success(f"**🔥 Earnings Mover (실적 민감주):** 이 종목은 실적 발표가 주가에 **매우 강력한 영향**을 미칩니다. (시장/섹터와 무관하게 평균 **{score:.1f}%** 급등락)")

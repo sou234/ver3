@@ -109,3 +109,35 @@ def fetch_historical_price(ticker):
     except Exception as e:
         st.error(f"Price Fetch Error: {e}")
         return pd.DataFrame()
+@st.cache_data(ttl=86400)
+def fetch_historical_earnings_dates(ticker):
+    """
+    Fetch historical earnings dates using Yahoo Finance (yfinance).
+    Returns a list of datetime objects (Earnings Dates) for the last 3 years.
+    """
+    import yfinance as yf
+    try:
+        # yf.Ticker object
+        t = yf.Ticker(ticker)
+        
+        # .earnings_dates is a DataFrame with Index = Date
+        # Note: This might require a valid session or proxy in some environments.
+        # But for 'Auto' mode we rely on yfinance generally working or using the session patch.
+        # Check if we need to apply the session patch globally? 
+        # logic_idio patches requests.Session, yf uses requests.
+        # So it might work.
+        
+        cal = t.earnings_dates
+        if cal is not None and not cal.empty:
+            dates = cal.index.sort_values(ascending=False)
+            # Filter for last 3 years and past dates only
+            cutoff = pd.Timestamp.now() - pd.DateOffset(years=3)
+            now = pd.Timestamp.now()
+            
+            valid_dates = dates[(dates >= cutoff) & (dates <= now)]
+            return valid_dates.tolist()
+            
+    except Exception as e:
+        print(f"Earnings History Fetch Error ({ticker}): {e}")
+        
+    return []
