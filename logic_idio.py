@@ -5,6 +5,8 @@ from sklearn.linear_model import LinearRegression
 import requests
 import urllib3
 import streamlit as st
+import zipfile
+import io
 
 # ---------------------------------------------------------
 # SSL Patch for Robustness (duplicated from app.py to ensure safety)
@@ -686,3 +688,53 @@ def get_vix_level():
     import time
     random_vix = 18.5 + (time.time() % 100 / 20.0)
     return random_vix
+
+@st.cache_data(ttl=86400)
+def fetch_spy_proxy():
+    """
+    Fetch SPY data to act as S&P 500 Market Proxy.
+    Priority: Nasdaq > Yahoo (Session) > Synthetic Fallback
+    """
+    # 1. Try Nasdaq (Known to work for stocks)
+    try:
+        if 'logic_crawler' not in globals():
+             import logic_crawler
+             
+        df = logic_crawler.fetch_historical_price("SPY")
+        if not df.empty and 'Stock' in df.columns:
+            # Rename 'Stock' -> 'Market'
+            df.rename(columns={'Stock': 'Market'}, inplace=True)
+            return df
+    except:
+        pass
+        
+    # 2. Try Yahoo (Session patched)
+    try:
+        session = requests.Session()
+        session.verify = False
+        dat = yf.download("SPY", period="3y", session=session, progress=False)
+        if not dat.empty:
+            # Prefer 'Adj Close', fall back to 'Close'
+            if 'Adj Close' in dat.columns:
+                 s = dat['Adj Close']
+            elif 'Close' in dat.columns:
+                 s = dat['Close']
+            else:
+                 return None
+
+            if isinstance(s, pd.DataFrame):
+                s = s['SPY'] if 'SPY' in s.columns else s.iloc[:, 0]
+            
+            df = pd.DataFrame(s)
+            df.columns = ['Market']
+            df.index.name = 'Date'
+            
+            # Convert to Log Returns: ln(Pt / Pt-1)
+            # Using numpy log of simple return + 1 is equivalent
+            # Or price/shifted_price
+            df['Market'] = np.log(df['Market'] / df['Market'].shift(1))
+            return df.dropna()
+    except:
+        pass
+        
+    return None
