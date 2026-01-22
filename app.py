@@ -538,7 +538,7 @@ if menu == "📈 Super-Stock":
         
         # 1. Desktop + Mobile (Combined)
         with sub_tab1:
-            df = fetch_statcounter_data("search_engine", device="desktop+mobile+tablet+console")
+            df = fetch_statcounter_data("search_engine", device="desktop+mobile")
             df_proc = process_search_engine_data(df)
             
             if not df_proc.empty:
