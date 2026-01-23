@@ -271,86 +271,74 @@ class ActiveETFMonitor:
     def get_market_returns(self, df_prev: pd.DataFrame, df_today: pd.DataFrame,
                           date_prev: str, date_today: str) -> Dict[str, float]:
         """
-        yfinance로 각 종목의 시장 수익률 가져오기
-
-        Args:
-            df_prev: 전일 포트폴리오
-            df_today: 금일 포트폴리오 (PDF fallback용)
-            date_prev: 전일 날짜
-            date_today: 금일 날짜
-
-        Returns:
-            {종목코드: 수익률} 딕셔너리
+        yfinance로 각 종목의 시장 수익률 가져오기 (Bulk Download 최적화)
         """
         market_returns = {}
-        print(f"[STATS] yfinance로 시장 수익률 수집 중...")
+        print(f"[STATS] yfinance로 시장 수익률 수집 중... (Bulk Download)")
 
+        # 1. 티커 매핑 및 수집
+        code_map = {} # code -> ticker
+        valid_tickers = []
+        
+        for _, row in df_prev.iterrows():
+            code = row['종목코드']
+            if row['종목명'] == '현금' or code == '':
+                market_returns[code] = 0.0
+                continue
+                
+            ticker = self._ticker_from_code(code)
+            if ticker:
+                code_map[code] = ticker
+                valid_tickers.append(ticker)
+            else:
+                # 티커 없는 경우 바로 PDF Fallback 후보
+                pass
+
+        # 2. Bulk Download
+        if valid_tickers:
+            try:
+                # progress=False to keep stdout clean
+                bulk_data = yf.download(valid_tickers, period="5d", threads=True, progress=False)['Close']
+                
+                # If only one stock, bulk_data is Series, convert to DataFrame
+                if isinstance(bulk_data, pd.Series):
+                    bulk_data = bulk_data.to_frame(name=valid_tickers[0])
+            except Exception as e:
+                print(f"[ERR] Bulk Download Failed: {e}")
+                bulk_data = pd.DataFrame()
+        else:
+            bulk_data = pd.DataFrame()
+
+        # 3. 수익률 계산
         for _, row in df_prev.iterrows():
             code = row['종목코드']
             stock_name = row['종목명']
-
-            # 현금은 0% 처리
-            if stock_name == '현금' or code == '':
-                market_returns[code] = 0.0
+            
+            # 이미 처리된 경우 (현금 등)
+            if code in market_returns:
                 continue
-
-            ticker_symbol = self._ticker_from_code(code)
-
-            # 티커 변환 실패 (ISIN, 지원안하는 선물 등)
-            if not ticker_symbol:
-                # PDF 데이터로 fallback
+                
+            ticker = code_map.get(code)
+            
+            # yfinance 데이터 확인
+            yf_success = False
+            if ticker and not bulk_data.empty:
                 try:
-                    today_row = df_today[df_today['종목코드'] == code]
-                    if len(today_row) > 0 and row['수량'] > 0 and today_row.iloc[0]['수량'] > 0:
-                        prev_price = row['평가금액'] / row['수량']
-                        today_price = today_row.iloc[0]['평가금액'] / today_row.iloc[0]['수량']
-                        pdf_return = (today_price / prev_price - 1) if prev_price > 0 else 0
-                        market_returns[code] = pdf_return
-                        print(f"[INFO]  {code[:20]} ({stock_name}): yfinance 미지원, PDF 가격 사용 ({pdf_return*100:.2f}%)")
-                    else:
-                        market_returns[code] = 0.0
-                        print(f"[INFO]  {code[:20]} ({stock_name}): yfinance 미지원, 0% 사용")
+                    # Multi-index or Single Column handling
+                    if ticker in bulk_data.columns:
+                        hist = bulk_data[ticker].dropna()
+                        if len(hist) >= 2:
+                            prev_close = hist.iloc[-2]
+                            today_close = hist.iloc[-1]
+                            market_return = (today_close / prev_close - 1) if prev_close > 0 else 0.0
+                            market_returns[code] = market_return
+                            print(f"[OK] {ticker} ({stock_name}): {market_return*100:+.2f}%")
+                            yf_success = True
                 except Exception as e:
-                    market_returns[code] = 0.0
-                    print(f"[WARN]  {code[:20]} ({stock_name}): PDF fallback 실패 - {type(e).__name__}: {str(e)[:50]}")
-                continue
-
-            try:
-                # yfinance로 데이터 가져오기
-                # 미국 장 기준: 항상 최신 2개 영업일 (D-1, D-2) 사용
-                ticker = yf.Ticker(ticker_symbol)
-                hist = ticker.history(period="5d")  # 최근 5일 데이터 (영업일 2일 확보)
-
-                if len(hist) < 2:
-                    # 데이터 부족 - PDF 데이터로 fallback
-                    today_row = df_today[df_today['종목코드'] == code]
-                    if len(today_row) > 0 and row['수량'] > 0 and today_row.iloc[0]['수량'] > 0:
-                        prev_price = row['평가금액'] / row['수량']
-                        today_price = today_row.iloc[0]['평가금액'] / today_row.iloc[0]['수량']
-                        pdf_return = (today_price / prev_price - 1) if prev_price > 0 else 0
-                        market_returns[code] = pdf_return
-                        print(f"[INFO]  {ticker_symbol} ({stock_name}): yfinance 데이터 부족, PDF 가격 사용 ({pdf_return*100:.2f}%)")
-                    else:
-                        market_returns[code] = 0.0
-                        print(f"[WARN]  {ticker_symbol} ({stock_name}): yfinance 데이터 부족, 0% 사용")
-                    continue
-
-                # 최신 2개 영업일 사용 (D-1, D-2)
-                prev_close = hist.iloc[-2]['Close']   # D-2 (전전일 종가)
-                today_close = hist.iloc[-1]['Close']  # D-1 (전일 종가)
-                prev_date_used = hist.iloc[-2].name.strftime('%Y-%m-%d')
-                today_date_used = hist.iloc[-1].name.strftime('%Y-%m-%d')
-
-                # 수익률 계산
-                market_return = (today_close / prev_close - 1) if prev_close > 0 else 0.0
-                market_returns[code] = market_return
-                print(f"[OK] {ticker_symbol} ({stock_name}): {market_return*100:+.2f}% ({prev_date_used} → {today_date_used})")
-
-            except Exception as e:
-                # 오류 발생 시 PDF 데이터로 fallback
-                error_type = type(e).__name__
-                error_msg = str(e)[:100]
-
+                    pass
+            
+            # 4. Fallback (PDF 데이터)
+            if not yf_success:
                 try:
                     today_row = df_today[df_today['종목코드'] == code]
                     if len(today_row) > 0 and row['수량'] > 0 and today_row.iloc[0]['수량'] > 0:
@@ -358,14 +346,12 @@ class ActiveETFMonitor:
                         today_price = today_row.iloc[0]['평가금액'] / today_row.iloc[0]['수량']
                         pdf_return = (today_price / prev_price - 1) if prev_price > 0 else 0
                         market_returns[code] = pdf_return
-                        print(f"[WARN]  {ticker_symbol} ({stock_name}): yfinance 오류 ({error_type}: {error_msg}), PDF 가격 사용 ({pdf_return*100:.2f}%)")
+                        print(f"[Info] {stock_name}: PDF 가격 사용 ({pdf_return*100:.2f}%)")
                     else:
                         market_returns[code] = 0.0
-                        print(f"[WARN]  {ticker_symbol} ({stock_name}): yfinance 오류 ({error_type}: {error_msg}), 0% 사용")
                 except:
                     market_returns[code] = 0.0
-                    print(f"[WARN]  {ticker_symbol} ({stock_name}): yfinance 및 PDF fallback 실패 ({error_type}), 0% 사용")
-
+                    
         return market_returns
 
     def analyze_rebalancing(self, df_today: pd.DataFrame, df_prev: pd.DataFrame,

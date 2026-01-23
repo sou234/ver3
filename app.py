@@ -710,70 +710,120 @@ if menu == "📊 Active ETF Analysis":
         st.info("📌 **대상 종목:** KOSEF 미국성장기업30 Active (459790)")
         
         if KiwoomETFMonitor is None:
-             st.error("Kiwoom 모듈(etf_kiwoom.py)을 로드할 수 없습니다.")
+             st.error("Kiwoom 모듈을 로드할 수 없습니다.")
         else:
-             # 1. Date Selection
+             # Date Selection
              col_date, col_btn = st.columns([2, 1])
              with col_date:
                  target_date = st.date_input("조회할 날짜 선택", datetime.now(pytz.timezone('Asia/Seoul')))
-             
              with col_btn:
-                 # Align button down
                  st.write("") 
                  st.write("")
-                 run_btn = st.button("구성종목 조회 🔍")
+                 run_btn = st.button("리밸런싱 분석 조회 🔍")
              
              if run_btn:
-                 with st.spinner(f"{target_date} 데이터 조회 중..."):
+                 with st.spinner(f"{target_date} 데이터 및 이전 영업일 비교 분석 중..."):
                      try:
                          mon = KiwoomETFMonitor()
                          t_date_str = target_date.strftime("%Y-%m-%d")
                          
-                         # Fetch Data
-                         df_target = mon.get_portfolio_data(t_date_str)
+                         # Data Fetch
+                         df_curr = mon.get_portfolio_data(t_date_str)
+                         prev_day = mon.get_previous_business_day(t_date_str)
                          
-                         if not df_target.empty:
-                             st.success(f"✅ {t_date_str} 기준 포트폴리오 (총 {len(df_target)}종목)")
+                         if df_curr.empty:
+                             st.warning(f"⚠️ {t_date_str} 데이터를 찾을 수 없습니다.")
+                             st.stop()
                              
-                             # Main View: Components & Weights
-                             # Sort by Weight descending
-                             df_display = df_target[['종목명', '종목코드', '비중', '보유수량', '평가금액']].sort_values('비중', ascending=False)
+                         # Analysis
+                         if prev_day:
+                             df_prev = mon.load_data(prev_day)
+                             analysis = mon.analyze_rebalancing(df_curr, df_prev)
                              
-                             # Format for display
-                             df_display['비중'] = df_display['비중'].apply(lambda x: f"{x:.2f}%")
-                             df_display['보유수량'] = df_display['보유수량'].apply(lambda x: f"{x:,.0f}")
-                             df_display['평가금액'] = df_display['평가금액'].apply(lambda x: f"{x:,.0f}")
+                             st.success(f"✅ 분석 완료 (비교: {t_date_str} vs {prev_day})")
                              
-                             st.dataframe(df_display, hide_index=True, use_container_width=True)
+                             # --- Dashboard UI (4 Quadrants) ---
                              
-                             # Optional: Compare with Previous Day (Rebalancing)
-                             with st.expander("🔄 전일 대비 변동 내역 보기 (Rebalancing)"):
-                                 prev_day = mon.get_previous_business_day(t_date_str)
-                                 if prev_day:
-                                     df_prev = mon.load_data(prev_day)
-                                     analysis = mon.analyze_rebalancing(df_target, df_prev)
-                                     
-                                     st.caption(f"비교 기준일: {prev_day} vs {t_date_str}")
-                                     
-                                     c1, c2 = st.columns(2)
-                                     with c1:
-                                         st.markdown("**수량 증가 (매수)**")
-                                         if analysis['increased_stocks']:
-                                             st.dataframe(pd.DataFrame(analysis['increased_stocks'])[['종목명', '수량변화']], hide_index=True)
-                                         else: st.caption("-")
-                                     with c2:
-                                         st.markdown("**수량 감소 (매도)**")
-                                         if analysis['decreased_stocks']:
-                                             st.dataframe(pd.DataFrame(analysis['decreased_stocks'])[['종목명', '수량변화']], hide_index=True)
-                                         else: st.caption("-")
+                             # Styles helper
+                             def flavor_df(df, type='neu'):
+                                 return df
+                             
+                             # Row 1: New & Removed
+                             c1, c2 = st.columns(2)
+                             with c1:
+                                 st.markdown("##### 🟢 신규 편입 (New)")
+                                 if analysis['new_stocks']:
+                                     new_df = pd.DataFrame(analysis['new_stocks'])
+                                     # Show Name, Shares, Weight
+                                     disp = new_df[['종목명', '보유수량_today', '비중_today']].copy()
+                                     disp.columns = ['종목명', '수량(주)', '비중(%)']
+                                     disp['수량(주)'] = disp['수량(주)'].apply(lambda x: f"{x:,.0f}")
+                                     disp['비중(%)'] = disp['비중(%)'].apply(lambda x: f"{x:.2f}")
+                                     st.dataframe(disp, hide_index=True, use_container_width=True)
                                  else:
-                                     st.warning("이전 영업일 데이터를 찾을 수 없어 비교가 불가능합니다.")
+                                     st.info("신규 편입 종목 없음")
+                                     
+                             with c2:
+                                 st.markdown("##### 🔴 완전 편출 (Removed)")
+                                 if analysis['removed_stocks']:
+                                     rem_df = pd.DataFrame(analysis['removed_stocks'])
+                                     # Show Name, Prev Shares, Prev Weight
+                                     disp = rem_df[['종목명', '보유수량_prev', '비중_prev']].copy()
+                                     disp.columns = ['종목명', '이전수량', '이전비중']
+                                     disp['이전수량'] = disp['이전수량'].apply(lambda x: f"{x:,.0f}")
+                                     disp['이전비중'] = disp['이전비중'].apply(lambda x: f"{x:.2f}")
+                                     st.dataframe(disp, hide_index=True, use_container_width=True)
+                                 else:
+                                     st.info("완전 편출 종목 없음")
+                                     
+                             st.markdown("---")
+                             
+                             # Row 2: Increased & Decreased (Top 5)
+                             c3, c4 = st.columns(2)
+                             with c3:
+                                 st.markdown("##### 🔼 비중 확대 (Top 5)")
+                                 if analysis['increased_stocks']:
+                                     inc_df = pd.DataFrame(analysis['increased_stocks'])
+                                     # Sort by Share Change
+                                     inc_df = inc_df.sort_values('수량변화', ascending=False).head(5)
+                                     
+                                     disp = inc_df[['종목명', '수량변화', '비중변화']].copy()
+                                     disp.columns = ['종목명', '매수(주)', '비중변동']
+                                     disp['매수(주)'] = disp['매수(주)'].apply(lambda x: f"+{x:,.0f}")
+                                     disp['비중변동'] = disp['비중변동'].apply(lambda x: f"+{x:.2f}%p")
+                                     st.dataframe(disp, hide_index=True, use_container_width=True)
+                                 else:
+                                     st.info("비중 확대 종목 없음")
+                                     
+                             with c4:
+                                 st.markdown("##### 🔽 비중 축소 (Top 5)")
+                                 if analysis['decreased_stocks']:
+                                     dec_df = pd.DataFrame(analysis['decreased_stocks'])
+                                     # Sort by Share Change (Negative) - show largest magnitude
+                                     dec_df = dec_df.sort_values('수량변화', ascending=True).head(5)
+                                     
+                                     disp = dec_df[['종목명', '수량변화', '비중변화']].copy()
+                                     disp.columns = ['종목명', '매도(주)', '비중변동']
+                                     disp['매도(주)'] = disp['매도(주)'].apply(lambda x: f"{x:,.0f}") # includes minus sign
+                                     disp['비중변동'] = disp['비중변동'].apply(lambda x: f"{x:.2f}%p")
+                                     st.dataframe(disp, hide_index=True, use_container_width=True)
+                                 else:
+                                     st.info("비중 축소 종목 없음")
+
+                             # Expandable Full List
+                             with st.expander("📋 전체 구성종목 리스트 (PDF)"):
+                                 df_all = df_curr[['종목명', '종목코드', '보유수량', '비중']].sort_values('비중', ascending=False)
+                                 df_all['보유수량'] = df_all['보유수량'].apply(lambda x: f"{x:,.0f}")
+                                 df_all['비중'] = df_all['비중'].apply(lambda x: f"{x:.2f}%")
+                                 st.dataframe(df_all, hide_index=True, use_container_width=True)
+
                          else:
-                             st.warning(f"⚠️ {t_date_str} 데이터를 가져올 수 없습니다. (휴장일이거나 데이터 미제공)")
+                             st.warning("⚠️ 이전 영업일 데이터를 찾을 수 없어 리밸런싱 분석이 불가능합니다.")
+                             st.dataframe(df_curr, hide_index=True)
                              
                      except Exception as e:
                          st.error(f"Error: {e}")
-        
+                         
         st.stop() # Stop execution here
         
     # --- TIMEFOLIO Logic (Default) ---
@@ -841,105 +891,109 @@ if menu == "📊 Active ETF Analysis":
                     m3.metric("신규 편입", f"{len(analysis['new_stocks'])} 종목")
                     m4.metric("완전 편출", f"{len(analysis['removed_stocks'])} 종목")
 
-                    # 탭 구성
-                    tab1, tab2, tab3 = st.tabs(["주요 변경내역", "세부 변동", "전체 포트폴리오"])
-                    
-                    with tab1:
-                        # 신규 편입 & 편출
-                        c1, c2 = st.columns(2)
-                        with c1:
-                            st.markdown("##### 🟢 신규 편입")
-                            if analysis['new_stocks']:
-                                rows = []
-                                for s in analysis['new_stocks']:
-                                    rows.append({
-                                        "종목명": s['종목명'],
-                                        "현재비중": f"{s['비중_today']:.2f}%",
-                                        "순수변동": f"+{s['순수_비중변화']:.2f}%p"
-                                    })
-                                st.dataframe(pd.DataFrame(rows), hide_index=True, use_container_width=True)
+                    # --- Dashboard UI (4 Quadrants) ---
+                    # Row 1: New & Removed
+                    c1, c2 = st.columns(2)
+                    with c1:
+                        st.markdown("##### 🟢 신규 편입 (New)")
+                        if analysis['new_stocks']:
+                            rows = []
+                            for s in analysis['new_stocks']:
+                                rows.append({
+                                    "종목명": s['종목명'],
+                                    "비중(%)": f"{s['비중_today']:.2f}%",
+                                    "비중변동": f"+{s['순수_비중변화']:.2f}%p"
+                                })
+                            st.dataframe(pd.DataFrame(rows), hide_index=True, use_container_width=True)
+                        else:
+                            st.info("신규 편입 종목 없음")
+
+                    with c2:
+                        st.markdown("##### 🔴 완전 편출 (Removed)")
+                        if analysis['removed_stocks']:
+                            rows = []
+                            for s in analysis['removed_stocks']:
+                                rows.append({
+                                    "종목명": s['종목명'],
+                                    "이전비중": f"{s['비중_prev']:.2f}%",
+                                    "비중변동": f"{s['순수_비중변화']:.2f}%p"
+                                })
+                            st.dataframe(pd.DataFrame(rows), hide_index=True, use_container_width=True)
+                        else:
+                            st.info("완전 편출 종목 없음")
+                            
+                    st.markdown("---")
+
+                    # Row 2: Increased & Decreased (Top 5)
+                    c3, c4 = st.columns(2)
+                    with c3:
+                        st.markdown("##### 🔼 비중 확대 (Top 5)")
+                        if analysis['increased_stocks']:
+                            df_inc = pd.DataFrame(analysis['increased_stocks'])
+                            df_inc = df_inc.sort_values('순수_비중변화', ascending=False).head(5)
+                            
+                            disp = df_inc[['종목명', '비중_today', '순수_비중변화']].copy()
+                            disp.columns = ['종목명', '현재비중', '비중변동']
+                            disp['현재비중'] = disp['현재비중'].apply(lambda x: f"{x:.2f}%")
+                            disp['비중변동'] = disp['비중변동'].apply(lambda x: f"+{x:.2f}%p")
+                            st.dataframe(disp, hide_index=True, use_container_width=True)
+                        else:
+                            st.info("비중 확대 종목 없음")
+
+                    with c4:
+                        st.markdown("##### 🔽 비중 축소 (Top 5)")
+                        if analysis['decreased_stocks']:
+                            df_dec = pd.DataFrame(analysis['decreased_stocks'])
+                            df_dec = df_dec.sort_values('순수_비중변화', ascending=True).head(5)
+                            
+                            disp = df_dec[['종목명', '비중_today', '순수_비중변화']].copy()
+                            disp.columns = ['종목명', '현재비중', '비중변동']
+                            disp['현재비중'] = disp['현재비중'].apply(lambda x: f"{x:.2f}%")
+                            disp['비중변동'] = disp['비중변동'].apply(lambda x: f"{x:.2f}%p")
+                            st.dataframe(disp, hide_index=True, use_container_width=True)
+                        else:
+                            st.info("비중 축소 종목 없음")
+                            
+                    st.info("* **순수 변동**: 시장 가격 등락 효과를 제거하고, 매니저의 실제 매매로 인한 비중 변화분만 추산한 값입니다.")
+
+                    # Expandable: Chart & Full List
+                    with st.expander("📋 전체 포트폴리오 구성 및 차트"):
+                        # 전체 리스트 및 차트
+                        st.subheader("📋 전체 포트폴리오 구성")
+                        
+                        c_chart, c_list = st.columns([1, 1])
+                        
+                        with c_chart:
+                            # 도넛 차트 복원
+                            chart_df = df_today.copy()
+                            chart_df['비중'] = pd.to_numeric(chart_df['비중'], errors='coerce')
+                            
+                            # Top 5 외에는 '기타'로 묶기
+                            chart_df = chart_df.sort_values('비중', ascending=False)
+                            if len(chart_df) > 5:
+                                top5 = chart_df.iloc[:5]
+                                others = chart_df.iloc[5:]
+                                others_sum = others['비중'].sum()
+                                others_row = pd.DataFrame([{'종목명': '기타', '비중': others_sum}])
+                                final_chart_df = pd.concat([top5, others_row], ignore_index=True)
                             else:
-                                st.caption("신규 편입 종목 없음")
+                                final_chart_df = chart_df
 
-                        with c2:
-                            st.markdown("##### 🔴 완전 편출")
-                            if analysis['removed_stocks']:
-                                rows = []
-                                for s in analysis['removed_stocks']:
-                                    rows.append({
-                                        "종목명": s['종목명'],
-                                        "이전비중": f"{s['비중_prev']:.2f}%",
-                                        "순수변동": f"{s['순수_비중변화']:.2f}%p"
-                                    })
-                                st.dataframe(pd.DataFrame(rows), hide_index=True, use_container_width=True)
-                            else:
-                                st.caption("완전 편출 종목 없음")
-
-                    with tab2:
-                        # 비중 확대 & 축소
-                        c1, c2 = st.columns(2)
-                        with c1:
-                            st.markdown("##### 🔼 비중 확대 (Top 5)")
-                            if analysis['increased_stocks']:
-                                df_inc = pd.DataFrame(analysis['increased_stocks'])
-                                df_inc = df_inc.sort_values('순수_비중변화', ascending=False).head(5)
-                                display_df = df_inc[['종목명', '비중_prev', '비중_today', '순수_비중변화']].copy()
-                                display_df.columns = ['종목명', '이전(%)', '현재(%)', '변동(%p)']
-                                st.dataframe(display_df.style.format({'이전(%)': '{:.2f}', '현재(%)': '{:.2f}', '변동(%p)': '+{:.2f}'}), hide_index=True, use_container_width=True)
-                            else:
-                                st.caption("비중 확대 종목 없음")
-
-                        with c2:
-                            st.markdown("##### 🔽 비중 축소 (Top 5)")
-                            if analysis['decreased_stocks']:
-                                df_dec = pd.DataFrame(analysis['decreased_stocks'])
-                                df_dec = df_dec.sort_values('순수_비중변화', ascending=True).head(5)
-                                display_df = df_dec[['종목명', '비중_prev', '비중_today', '순수_비중변화']].copy()
-                                display_df.columns = ['종목명', '이전(%)', '현재(%)', '변동(%p)']
-                                st.dataframe(display_df.style.format({'이전(%)': '{:.2f}', '현재(%)': '{:.2f}', '변동(%p)': '{:.2f}'}), hide_index=True, use_container_width=True)
-                            else:
-                                st.caption("비중 축소 종목 없음")
-                                
-                        st.info("* **순수 변동**: 시장 가격 등락에 의한 '가상 비중'을 제외한 매니저의 실제 매매로 인한 비중 변화 (추정치)")
-
-                    with tab3:
-                        st.markdown("##### 📋 전체 포트폴리오 구성")
-                # 전체 리스트 및 차트
-                st.subheader("📋 전체 포트폴리오 구성")
-                
-                c_chart, c_list = st.columns([1, 1])
-                
-                with c_chart:
-                    # 도넛 차트 복원
-                    chart_df = df_today.copy()
-                    chart_df['비중'] = pd.to_numeric(chart_df['비중'], errors='coerce')
-                    
-                    # Top 5 외에는 '기타'로 묶기
-                    chart_df = chart_df.sort_values('비중', ascending=False)
-                    if len(chart_df) > 5:
-                        top5 = chart_df.iloc[:5]
-                        others = chart_df.iloc[5:]
-                        others_sum = others['비중'].sum()
-                        others_row = pd.DataFrame([{'종목명': '기타', '비중': others_sum}])
-                        final_chart_df = pd.concat([top5, others_row], ignore_index=True)
-                    else:
-                        final_chart_df = chart_df
-
-                    fig = px.pie(final_chart_df, values="비중", names="종목명", hole=0.4, title="포트폴리오 비중", color_discrete_sequence=px.colors.qualitative.Set3)
-                    fig.update_traces(textinfo='percent+label')
-                    st.plotly_chart(fig, use_container_width=True)
-                
-                with c_list:
-                    # 전체 데이터 표시 (심플 테이블)
-                    df_all = df_today[['종목명', '비중']].copy()
-                    df_all['비중'] = pd.to_numeric(df_all['비중'], errors='coerce')
-                    df_all = df_all.sort_values('비중', ascending=False)
-                    
-                    # 인덱스 1부터 시작 (순위)
-                    df_all.index = range(1, len(df_all) + 1)
-                    
-                    # 비중 포맷팅하여 표시
-                    st.dataframe(df_all.style.format({'비중': '{:.2f}%'}), use_container_width=True)
+                            fig = px.pie(final_chart_df, values="비중", names="종목명", hole=0.4, title="포트폴리오 비중", color_discrete_sequence=px.colors.qualitative.Set3)
+                            fig.update_traces(textinfo='percent+label')
+                            st.plotly_chart(fig, use_container_width=True)
+                        
+                        with c_list:
+                            # 전체 데이터 표시 (심플 테이블)
+                            df_all = df_today[['종목명', '비중']].copy()
+                            df_all['비중'] = pd.to_numeric(df_all['비중'], errors='coerce')
+                            df_all = df_all.sort_values('비중', ascending=False)
+                            
+                            # 인덱스 1부터 시작 (순위)
+                            df_all.index = range(1, len(df_all) + 1)
+                            
+                            # 비중 포맷팅하여 표시
+                            st.dataframe(df_all.style.format({'비중': '{:.2f}%'}), use_container_width=True)
 
 
                 # --- [신규 기능 2] 엑셀 다운로드 ---

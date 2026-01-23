@@ -138,15 +138,13 @@ class KiwoomETFMonitor:
         """
         merged = pd.merge(
             df_today[['종목명', '종목코드', '보유수량', '비중']],
-            df_prev[['종목코드', '보유수량', '비중']],
+            df_prev[['종목명', '종목코드', '보유수량', '비중']],
             on='종목코드',
             how='outer',
             suffixes=('_today', '_prev')
         )
         
-        merged['종목명'] = merged['종목명'].fillna(df_prev.set_index('종목코드')['종목명'] if '종목명' in df_prev else '')
-        # Fix missing name if possible (via another merge or mapping)
-        # Actually df_prev should have names. We can join on Code and get Name from either.
+        merged['종목명'] = merged['종목명_today'].fillna(merged['종목명_prev'])
         
         # Fill NaNs
         for col in ['보유수량_today', '보유수량_prev', '비중_today', '비중_prev']:
