@@ -744,21 +744,27 @@ if menu == "📊 Active ETF Analysis":
                              
                              # --- Dashboard UI (4 Quadrants) ---
                              
-                             # Styles helper
-                             def flavor_df(df, type='neu'):
-                                 return df
+                             # 1. Summary Metrics
+                             m1, m2, m3, m4 = st.columns(4)
+                             m1.metric("비중 확대", f"{len(analysis['increased_stocks'])} 종목")
+                             m2.metric("비중 축소", f"{len(analysis['decreased_stocks'])} 종목")
+                             m3.metric("신규 편입", f"{len(analysis['new_stocks'])} 종목")
+                             m4.metric("완전 편출", f"{len(analysis['removed_stocks'])} 종목")
                              
+                             st.markdown("---")
+                             
+                             # 2. Quadrants
                              # Row 1: New & Removed
                              c1, c2 = st.columns(2)
                              with c1:
                                  st.markdown("##### 🟢 신규 편입 (New)")
                                  if analysis['new_stocks']:
                                      new_df = pd.DataFrame(analysis['new_stocks'])
-                                     # Show Name, Shares, Weight
-                                     disp = new_df[['종목명', '보유수량_today', '비중_today']].copy()
-                                     disp.columns = ['종목명', '수량(주)', '비중(%)']
-                                     disp['수량(주)'] = disp['수량(주)'].apply(lambda x: f"{x:,.0f}")
-                                     disp['비중(%)'] = disp['비중(%)'].apply(lambda x: f"{x:.2f}")
+                                     # Show Name, Weight, Weight Change
+                                     disp = new_df[['종목명', '비중_today', '비중변화']].copy()
+                                     disp.columns = ['종목명', '비중', '비중변동']
+                                     disp['비중'] = disp['비중'].apply(lambda x: f"{x:.2f}%")
+                                     disp['비중변동'] = disp['비중변동'].apply(lambda x: f"+{x:.2f}%p")
                                      st.dataframe(disp, hide_index=True, use_container_width=True)
                                  else:
                                      st.info("신규 편입 종목 없음")
@@ -767,29 +773,31 @@ if menu == "📊 Active ETF Analysis":
                                  st.markdown("##### 🔴 완전 편출 (Removed)")
                                  if analysis['removed_stocks']:
                                      rem_df = pd.DataFrame(analysis['removed_stocks'])
-                                     # Show Name, Prev Shares, Prev Weight
-                                     disp = rem_df[['종목명', '보유수량_prev', '비중_prev']].copy()
-                                     disp.columns = ['종목명', '이전수량', '이전비중']
-                                     disp['이전수량'] = disp['이전수량'].apply(lambda x: f"{x:,.0f}")
-                                     disp['이전비중'] = disp['이전비중'].apply(lambda x: f"{x:.2f}")
+                                     # Show Name, Prev Weight, Weight Change
+                                     disp = rem_df[['종목명', '비중_prev', '비중변화']].copy()
+                                     disp.columns = ['종목명', '이전비중', '비중변동']
+                                     disp['이전비중'] = disp['이전비중'].apply(lambda x: f"{x:.2f}%")
+                                     disp['비중변동'] = disp['비중변동'].apply(lambda x: f"{x:.2f}%p")
                                      st.dataframe(disp, hide_index=True, use_container_width=True)
                                  else:
                                      st.info("완전 편출 종목 없음")
                                      
-                             st.markdown("---")
-                             
                              # Row 2: Increased & Decreased (Top 5)
                              c3, c4 = st.columns(2)
                              with c3:
                                  st.markdown("##### 🔼 비중 확대 (Top 5)")
                                  if analysis['increased_stocks']:
                                      inc_df = pd.DataFrame(analysis['increased_stocks'])
-                                     # Sort by Share Change
-                                     inc_df = inc_df.sort_values('수량변화', ascending=False).head(5)
+                                     # Sort by Share Change? Or Weight Change?
+                                     # User asked "비중확대". Usually sorted by magnitude.
+                                     # Kiwoom analysis sorts by '수량변화' internally for 'Increased', but let's sort display by '비중변화' for consistency with "Weight" focus?
+                                     # Or stick to Share Change sort but display Weight?
+                                     # I'll sort by '비중변화' descending.
+                                     inc_df = inc_df.sort_values('비중변화', ascending=False).head(5)
                                      
-                                     disp = inc_df[['종목명', '수량변화', '비중변화']].copy()
-                                     disp.columns = ['종목명', '매수(주)', '비중변동']
-                                     disp['매수(주)'] = disp['매수(주)'].apply(lambda x: f"+{x:,.0f}")
+                                     disp = inc_df[['종목명', '비중_today', '비중변화']].copy()
+                                     disp.columns = ['종목명', '현재비중', '비중변동']
+                                     disp['현재비중'] = disp['현재비중'].apply(lambda x: f"{x:.2f}%")
                                      disp['비중변동'] = disp['비중변동'].apply(lambda x: f"+{x:.2f}%p")
                                      st.dataframe(disp, hide_index=True, use_container_width=True)
                                  else:
@@ -799,12 +807,12 @@ if menu == "📊 Active ETF Analysis":
                                  st.markdown("##### 🔽 비중 축소 (Top 5)")
                                  if analysis['decreased_stocks']:
                                      dec_df = pd.DataFrame(analysis['decreased_stocks'])
-                                     # Sort by Share Change (Negative) - show largest magnitude
-                                     dec_df = dec_df.sort_values('수량변화', ascending=True).head(5)
+                                     # Sort by Weight Change ascending
+                                     dec_df = dec_df.sort_values('비중변화', ascending=True).head(5)
                                      
-                                     disp = dec_df[['종목명', '수량변화', '비중변화']].copy()
-                                     disp.columns = ['종목명', '매도(주)', '비중변동']
-                                     disp['매도(주)'] = disp['매도(주)'].apply(lambda x: f"{x:,.0f}") # includes minus sign
+                                     disp = dec_df[['종목명', '비중_today', '비중변화']].copy()
+                                     disp.columns = ['종목명', '현재비중', '비중변동']
+                                     disp['현재비중'] = disp['현재비중'].apply(lambda x: f"{x:.2f}%")
                                      disp['비중변동'] = disp['비중변동'].apply(lambda x: f"{x:.2f}%p")
                                      st.dataframe(disp, hide_index=True, use_container_width=True)
                                  else:
