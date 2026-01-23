@@ -20,6 +20,10 @@ import re
 # [필수] 같은 폴더의 etf.py에서 클래스 임포트
 try:
     from etf import ActiveETFMonitor
+    try:
+        from etf_kiwoom import KiwoomETFMonitor
+    except ImportError:
+        KiwoomETFMonitor = None
 except ImportError:
     st.error("⚠️ 'etf.py' 파일이 없습니다. 같은 폴더에 넣어주세요.")
     st.stop()
@@ -510,7 +514,7 @@ with st.sidebar:
     menu = st.radio("메뉴 선택", [
         "📈 Super-Stock",
         "💎 Earnings Idio Score",
-        "📊 TIMEFOLIO Analysis"
+        "📊 Active ETF Analysis"
     ])
     
     if st.button("🔄 새로고침"):
@@ -546,10 +550,8 @@ if menu == "📈 Super-Stock":
                 fig = px.bar(df_proc, title="Search Engine M/S (Total)", barmode='stack', 
                              color_discrete_map={'Google': '#4285F4', 'Bing': '#00A4EF', 'Yahoo': '#7B0099', 'Other': '#999999'})
                 
-                # Y축 스케일 조정 (비율 파악 용이하도록)
-                y_min = df_proc['Google'].min() - 5
-                if y_min < 0: y_min = 0
-                fig.update_layout(yaxis_range=[y_min, 100], legend=dict(orientation="h", yanchor="top", y=-0.2, xanchor="center", x=0.5))
+                # Y축 스케일 조정 (0~100 고정)
+                fig.update_layout(yaxis_range=[0, 100], legend=dict(orientation="h", yanchor="top", y=-0.2, xanchor="center", x=0.5))
                 
                 st.plotly_chart(fig, use_container_width=True)
                 st.dataframe(df_proc.sort_index(ascending=False).style.format("{:.1f}%").background_gradient(cmap="Reds", subset=["Google"]), use_container_width=True)
@@ -563,9 +565,8 @@ if menu == "📈 Super-Stock":
                 fig = px.bar(df_proc, title="Search Engine M/S (Desktop)", barmode='stack',
                              color_discrete_map={'Google': '#4285F4', 'Bing': '#00A4EF', 'Yahoo': '#7B0099', 'Other': '#999999'})
                 
-                y_min = df_proc['Google'].min() - 5
-                if y_min < 0: y_min = 0
-                fig.update_layout(yaxis_range=[y_min, 100], legend=dict(orientation="h", yanchor="top", y=-0.2, xanchor="center", x=0.5))
+                # Y축 스케일 조정 (0~100 고정)
+                fig.update_layout(yaxis_range=[0, 100], legend=dict(orientation="h", yanchor="top", y=-0.2, xanchor="center", x=0.5))
 
                 st.plotly_chart(fig, use_container_width=True)
                 st.dataframe(df_proc.sort_index(ascending=False).style.format("{:.1f}%").background_gradient(cmap="Reds", subset=["Google"]), use_container_width=True)
@@ -579,9 +580,8 @@ if menu == "📈 Super-Stock":
                 fig = px.bar(df_proc, title="Search Engine M/S (Mobile)", barmode='stack',
                              color_discrete_map={'Google': '#4285F4', 'Bing': '#00A4EF', 'Yahoo': '#7B0099', 'Other': '#999999'})
                 
-                y_min = df_proc['Google'].min() - 5
-                if y_min < 0: y_min = 0
-                fig.update_layout(yaxis_range=[y_min, 100], legend=dict(orientation="h", yanchor="top", y=-0.2, xanchor="center", x=0.5))
+                # Y축 스케일 조정 (0~100 고정)
+                fig.update_layout(yaxis_range=[0, 100], legend=dict(orientation="h", yanchor="top", y=-0.2, xanchor="center", x=0.5))
 
                 st.plotly_chart(fig, use_container_width=True)
                 st.dataframe(df_proc.sort_index(ascending=False).style.format("{:.1f}%").background_gradient(cmap="Reds", subset=["Google"]), use_container_width=True)
@@ -700,8 +700,84 @@ if menu == "📈 Super-Stock":
 
 
 # [TAB 3] TIMEFOLIO Analysis (경쟁사 분석)
-if menu == "📊 TIMEFOLIO Analysis":
-    st.title("📊 TIMEFOLIO Official Portfolio & Rebalancing")
+if menu == "📊 Active ETF Analysis":
+    st.title("📊 Active ETF Daily Rebalancing")
+    
+    # Provider Selection
+    provider = st.radio("운용사 선택", ["TIMEFOLIO (타임폴리오)", "KIWOOM (키움 - KOSEF)"], horizontal=True)
+    
+    if "KIWOOM" in provider:
+        st.info("📌 **대상 종목:** KOSEF 미국성장기업30 Active (459790)")
+        
+        if KiwoomETFMonitor is None:
+             st.error("Kiwoom 모듈(etf_kiwoom.py)을 로드할 수 없습니다.")
+        else:
+             # 1. Date Selection
+             col_date, col_btn = st.columns([2, 1])
+             with col_date:
+                 target_date = st.date_input("조회할 날짜 선택", datetime.now(pytz.timezone('Asia/Seoul')))
+             
+             with col_btn:
+                 # Align button down
+                 st.write("") 
+                 st.write("")
+                 run_btn = st.button("구성종목 조회 🔍")
+             
+             if run_btn:
+                 with st.spinner(f"{target_date} 데이터 조회 중..."):
+                     try:
+                         mon = KiwoomETFMonitor()
+                         t_date_str = target_date.strftime("%Y-%m-%d")
+                         
+                         # Fetch Data
+                         df_target = mon.get_portfolio_data(t_date_str)
+                         
+                         if not df_target.empty:
+                             st.success(f"✅ {t_date_str} 기준 포트폴리오 (총 {len(df_target)}종목)")
+                             
+                             # Main View: Components & Weights
+                             # Sort by Weight descending
+                             df_display = df_target[['종목명', '종목코드', '비중', '보유수량', '평가금액']].sort_values('비중', ascending=False)
+                             
+                             # Format for display
+                             df_display['비중'] = df_display['비중'].apply(lambda x: f"{x:.2f}%")
+                             df_display['보유수량'] = df_display['보유수량'].apply(lambda x: f"{x:,.0f}")
+                             df_display['평가금액'] = df_display['평가금액'].apply(lambda x: f"{x:,.0f}")
+                             
+                             st.dataframe(df_display, hide_index=True, use_container_width=True)
+                             
+                             # Optional: Compare with Previous Day (Rebalancing)
+                             with st.expander("🔄 전일 대비 변동 내역 보기 (Rebalancing)"):
+                                 prev_day = mon.get_previous_business_day(t_date_str)
+                                 if prev_day:
+                                     df_prev = mon.load_data(prev_day)
+                                     analysis = mon.analyze_rebalancing(df_target, df_prev)
+                                     
+                                     st.caption(f"비교 기준일: {prev_day} vs {t_date_str}")
+                                     
+                                     c1, c2 = st.columns(2)
+                                     with c1:
+                                         st.markdown("**수량 증가 (매수)**")
+                                         if analysis['increased_stocks']:
+                                             st.dataframe(pd.DataFrame(analysis['increased_stocks'])[['종목명', '수량변화']], hide_index=True)
+                                         else: st.caption("-")
+                                     with c2:
+                                         st.markdown("**수량 감소 (매도)**")
+                                         if analysis['decreased_stocks']:
+                                             st.dataframe(pd.DataFrame(analysis['decreased_stocks'])[['종목명', '수량변화']], hide_index=True)
+                                         else: st.caption("-")
+                                 else:
+                                     st.warning("이전 영업일 데이터를 찾을 수 없어 비교가 불가능합니다.")
+                         else:
+                             st.warning(f"⚠️ {t_date_str} 데이터를 가져올 수 없습니다. (휴장일이거나 데이터 미제공)")
+                             
+                     except Exception as e:
+                         st.error(f"Error: {e}")
+        
+        st.stop() # Stop execution here
+        
+    # --- TIMEFOLIO Logic (Default) ---
+    st.subheader("TIMEFOLIO Official Portfolio & Rebalancing")
     
     etf_categories = {
         "해외주식형 (10종)": {
