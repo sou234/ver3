@@ -1083,11 +1083,16 @@ if menu == "💎 Earnings Idio Score":
         *   $SMB/HML/MOM$: Fama-French Style Factors
         
         **3. 최종 점수 (Earnings Idio Score)**
-        실적 발표일(Event Dates)에 발생한 잔차($\epsilon$)의 효율성을 측정합니다.
+        실적 발표일(T-2 ~ T+2)에 발생한 충격의 강도를 측정합니다.
         $$
-        \text{Score} = \frac{\text{Mean}(|Daily Idio Return|)}{\text{Std}(Daily Idio Return)}
+        \text{Score} = \frac{\text{Mean}_q(\text{Impact}_q)}{\text{Normal Volatility}}
         $$
-        (연율화 없이 일별 수치 그대로 사용하여, 변동성 대비 수익 효율을 측정함)
+        *   **Impact**: Window 내 **상위 2일(Top-2)** 잔차 수익률(|$\epsilon$|)의 평균
+        *   **Aggregation**: 분기별 Impact의 **중앙값(Median)** 사용 (이상치 제거)
+        *   **Normal Vol**: 이벤트 기간을 모두 제외한 평상시 잔차의 표준편차
+        
+        **4. Directional Score (방향성)**
+        실적 발표가 주가에 미치는 주된 방향을 나타냅니다. (Window 내 잔차 합의 중앙값)
         """)
 
     # 사이드바: 종목 선택
@@ -1100,13 +1105,16 @@ if menu == "💎 Earnings Idio Score":
         st.subheader("📅 Earnings Calendar")
         target_date = st.date_input("날짜 선택", datetime.now())
         
-        if st.button("실적 발표 종목 검색"):
-            with st.spinner("Nasdaq.com 조회 중..."):
-                calendar_df = logic_crawler.get_earnings_calendar(target_date.strftime("%Y-%m-%d"))
+        if st.button("실적 발표 종목 검색 (Weekly Scan)"):
+            with st.spinner("Searching next 7 days..."):
+                calendar_df = logic_crawler.get_earnings_calendar(target_date.strftime("%Y-%m-%d"), days=7)
                 if not calendar_df.empty:
+                    # Sort by Date, then Time
+                    calendar_df = calendar_df.sort_values(by=['Date', 'Time', 'Market Cap'], ascending=[True, True, False])
+                    
                     st.session_state['earnings_calendar'] = calendar_df
                     st.session_state['batch_results'] = None # Reset previous batch results
-                    st.success(f"✅ {len(calendar_df)}개 발견! 우측 대시보드에서 확인하세요.")
+                    st.success(f"✅ {len(calendar_df)}개 발견! (7일치 Data) 우측 대시보드에서 확인하세요.")
                 else:
                     st.warning("해당 날짜에 예정된 실적 발표가 없거나 데이터를 가져올 수 없습니다.")
                     st.session_state['earnings_calendar'] = None
@@ -1178,11 +1186,19 @@ if menu == "💎 Earnings Idio Score":
                 # Process ALL tickers (removing .head(20) limit)
                 targets = cal_df['Ticker'].tolist()
                 
+                # Prepare Sector Dictionary for Mapping
+                # Ticker -> Sector
+                sector_map = dict(zip(universe_df['Ticker'], universe_df['Sector']))
+                
                 for i, t in enumerate(targets):
                     status_text.text(f"Analyzing {t} ({i+1}/{len(targets)})...")
                     
                     try:
-                        m_data = logic_idio.get_market_data(t, '^GSPC') 
+                        # Determine Benchmark
+                        sec = sector_map.get(t, '지수') # Default to Index if unknown
+                        bench = logic_idio.SECTOR_BENCHMARKS.get(sec, '^GSPC')
+                        
+                        m_data = logic_idio.get_market_data(t, bench) 
                         if m_data is not None:
                             # Enrich with Sector/Style
                             m_data = logic_idio.enrich_with_factors(m_data, t)
@@ -1330,16 +1346,29 @@ if menu == "💎 Earnings Idio Score":
                 # 2. Calculate (Unpack 6 values)
                 score, earnings_events, betas, d_ret, d_vol, cp = logic_idio.calculate_idio_score(market_data, ticker)
                 
+                # [Safety] Module Reload Issue 방지: 혹시라도 float가 리턴되면 빈 dict로 변환
+                if not isinstance(cp, dict): cp = {}
+                if not isinstance(betas, dict): betas = {}
+                
                 # --- 결과 화면 ---
                 
                 # 1. 스코어 카드
                 col1, col2, col3, col4, col5 = st.columns(5)
                 col1.metric("Earnings Idio Score", f"{score:.2f}", 
-                            delta="Positive" if score > 0.5 else "Low",
-                            help="Daily Idio Return / Daily Volatility (No Annualization)")
+                            delta="High Impact" if score > 3.0 else "Normal",
+                            help="Median(Top-2 Avgs) / Normal Volatility")
                 
-                col2.metric("Earnings Mean Return", f"{cp.get('Earnings_Mean', 0.0)*100:.2f}%", help="실적 발표일 평균 절대 수익률")
-                col3.metric("Earnings Volatility", f"{cp.get('Earnings_Vol', 0.0)*100:.2f}%", help="실적 발표일 변동성")
+                # Directional Score Display
+                dir_score = cp.get('Direction_Score', 0.0)
+                dir_label = "Bullish" if dir_score > 0 else "Bearish"
+                dir_color = "normal" 
+                if abs(dir_score) > 0.05: dir_color = "inverse" # Highlight if significant direction
+                
+                col2.metric("Directional Score", f"{dir_score*100:.2f}%", 
+                            delta=dir_label, 
+                            help="Median Sum of Residuals (Window T-2~T+2)")
+
+                col3.metric("Normal Volatility", f"{cp.get('Normal_Vol', 0.0)*100:.2f}%", help="평상시(Non-Event) 변동성")
                 
                 col4.metric("분석된 이벤트", f"{len(earnings_events)}회")
                 col5.metric("Factor Model", "5-Factor" if 'MOM' in betas else "4-Factor")
@@ -1356,29 +1385,25 @@ if menu == "💎 Earnings Idio Score":
                 st.divider()
 
                 # 3. Comparative Analysis (New Section)
-                st.subheader("⚖️ Comparative Analysis: Earnings vs Non-Earnings")
-                st.caption("실적 발표일(Earnings Days)과 평상시(Non-Earnings Days)의 고유 변동성을 비교합니다.")
+                st.subheader("⚖️ Comparative Analysis: Earnings vs Normal")
+                st.caption("실적 발표일의 'Top-2 Peak' 충격과 평상시를 비교합니다.")
                 
                 c1, c2, c3 = st.columns(3)
                 
                 with c1:
-                    st.markdown("#### Earnings Days")
-                    st.metric("Mean Abs Return", f"{cp.get('Earnings_Mean',0)*100:.2f}%")
-                    st.metric("Volatility", f"{cp.get('Earnings_Vol',0)*100:.2f}%")
-                    st.metric("Count", f"{cp.get('Earnings_Count',0)} days")
+                    st.markdown("#### Earnings Impact")
+                    st.metric("Median Peak (Top-2)", f"{cp.get('Earnings_Stat',0)*100:.2f}%")
+                    st.metric("Direction", dir_label)
                     
                 with c2:
-                    st.markdown("#### Non-Earnings Days")
-                    st.metric("Mean Abs Return", f"{cp.get('NonEarnings_Mean',0)*100:.2f}%")
-                    st.metric("Volatility", f"{cp.get('NonEarnings_Vol',0)*100:.2f}%")
-                    st.metric("Count", f"{cp.get('NonEarnings_Count',0)} days")
+                    st.markdown("#### Normal Days")
+                    st.metric("Normal Volatility", f"{cp.get('Normal_Vol',0)*100:.2f}%")
                     
                 with c3:
                     st.markdown("#### Impact Multiplier")
-                    vol_ratio = cp.get('Vol_Ratio', 0.0)
-                    st.metric("Volatility Multiplier", f"{vol_ratio:.1f}x", 
-                              delta="High Impact" if vol_ratio > 2.0 else "Normal")
-                    st.info(f"실적 발표 날에는 평소보다 변동성이 **{vol_ratio:.1f}배** 증가합니다.")
+                    st.metric("Score (Multiplier)", f"{score:.1f}x", 
+                              delta="Significant" if score > 3.0 else "Normal")
+                    st.info(f"실적 발표 날에는 평소보다 변동성이 **{score:.1f}배** 증가합니다.")
 
                 # Comparative Chart
                 comp_df = pd.DataFrame({
@@ -1396,17 +1421,24 @@ if menu == "💎 Earnings Idio Score":
 
                 st.divider()
 
-                # 2. 인사이트 메시지 (골드만삭스 로직 적용)
-                if score > 4.0:
-                    st.success(f"**🔥 Earnings Mover (실적 민감주):** 이 종목은 실적 발표가 주가에 **매우 강력한 영향**을 미칩니다. (시장/섹터와 무관하게 평균 **{score:.1f}%** 급등락)")
+                # 2. 인사이트 메시지 (골드만삭스 로직 적용 + Direction)
+                if score > 3.0:
+                    sentiment = "상승(Bullish)" if dir_score > 0 else "하락(Bearish)"
+                    st.success(f"**🔥 Earnings Mover:** 이 종목은 실적 발표 때 평균적으로 **{score:.1f}배** 더 크게 움직이며, 주로 **{sentiment}** 방향성을 띱니다.")
                 elif score < 2.0:
-                    st.warning(f"**🛡️ Stable Stock (실적 무풍지대):** 이 종목은 실적 발표 날에도 시장 흐름을 따르며, 독자적인 변동성이 적습니다.")
+                    st.warning(f"**🛡️ Stable Stock:** 실적 발표 영향이 미미합니다. (변동성 배수: {score:.1f}x)")
+                
+                st.divider()
+
+                # 3. 그래프: Alpha vs Beta 분해
                 
                 st.divider()
 
                 # 3. 그래프: Alpha vs Beta 분해
                 st.subheader("📊 실적 발표일 수익률 분해 ")
                 st.caption(f"빨간색 막대(Idio)가 길수록 시장 영향 없이 개별 실적 이슈로만 움직였다는 뜻입니다.")
+            
+
 
                 try:
                     fig = go.Figure()
@@ -1426,4 +1458,12 @@ if menu == "💎 Earnings Idio Score":
                         # Display all relevant columns
                         st.dataframe(earnings_events[['Market', 'Sector', 'Stock', 'Beta_Return', 'Idio_Return']].style.format("{:.2%}").background_gradient(subset=['Idio_Return'], cmap='RdBu'))
             else:
-                st.error("데이터 로드에 실패했습니다. 티커를 확인하거나 잠시 후 다시 시도해주세요.")
+                 # Data Collection Failed (Detailed Feedback)
+                 st.warning(f"⚠️ **'{ticker}' 데이터 수집에 실패했습니다.**")
+                 st.markdown("""
+                 **가능한 원인은 다음과 같습니다:**
+                 1. **잘못된 티커**: 미국 주식 티커가 맞는지 확인해주세요. (예: 삼성전자 사용 불가)
+                 2. **데이터 접근 차단 (Yahoo Finance)**: 짧은 시간에 너무 많은 요청을 보내면 일시적으로 차단될 수 있습니다. (잠시 후 다시 시도)
+                 3. **데이터 부족**: 상장된 지 3년 미만인 종목이거나, 거래량이 매우 적은 종목일 수 있습니다. (Nasdaq 소스 사용 중)
+                 4. **네트워크 오류**: 인터넷 연결 상태를 확인해주세요.
+                 """)

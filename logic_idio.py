@@ -212,7 +212,7 @@ def create_synthetic_market_data(ticker):
     """
     Generate synthetic data for failover demonstration.
     """
-    dates = pd.date_range(end=pd.Timestamp.now(), periods=756, freq='B')
+    dates = pd.date_range(end=pd.Timestamp.now().normalize(), periods=756, freq='B')
     n = len(dates)
     
     seed_val = abs(hash(ticker)) % (2**32)
@@ -344,7 +344,7 @@ def calculate_idio_score(df, ticker_symbol):
     - 1-Factor: Market (CAPM)
     """
     if df is None or df.empty:
-         return 0.0, pd.DataFrame(), 0.0, 0.0, 0.0, 0.0
+         return 0.0, pd.DataFrame(), {}, 0.0, 0.0, {}
     
     # Enrich with Factors if needed (Sector/Style)
     # Note: df usually comes from process_benchmark_file which only has Market (and maybe Sector)
@@ -466,7 +466,8 @@ def calculate_idio_score(df, ticker_symbol):
                 if d in date_to_idx:
                     center_idx = date_to_idx[d]
                     
-                    # Window: [-2, +2] -> 5 days
+                    # Window: [T-2, T+2] -> 5 days (User Request: Wider coverage)
+                    # Since we take the MAX peak, wider window does NOT dilute score, but captures drifts.
                     start_idx = max(0, center_idx - 2)
                     end_idx = min(len(df) - 1, center_idx + 2)
                     
@@ -494,8 +495,10 @@ def calculate_idio_score(df, ticker_symbol):
     # But for calculation stability we need at least some data.
     if len(valid_dates) < 1:
          # Hard fallback if absolutely nothing matches
+         # Use top 10% or top 8 most volatile Idio Return days as proxy for "Event Days"
          top_volatile = df['Idio_Return'].abs().nlargest(8).index
          earnings_moves = df.loc[top_volatile]
+         valid_dates = top_volatile.tolist() # Update valid_dates for consistency downstream
     else:
          earnings_moves = df.loc[valid_dates]
 
@@ -541,37 +544,120 @@ def calculate_idio_score(df, ticker_symbol):
         ne_cnt = len(non_earnings_residuals)
     else:
         ne_mean, ne_vol, ne_cnt = 0.0, 0.0, 0
+    
+    # --- [New Logic: Max Peak per Event] ---
+    # Instead of averaging all days (dilution), we want "Average Peak Impact".
+    # Iterate through valid_real_dates to find max abs return for each event.
+    event_peaks = []
+    event_dirs = []
+    
+    if len(valid_real_dates) > 0:
+        # Use Real Dates if available
+        # Need to map dates to indices again or strict lookups
+        # To avoid re-mapping complexity, we can use the window lookup logic again or simplified approach
+        # Since we just need an aggregate, let's fast-loop.
+        for d in valid_real_dates:
+             # Window [T, T+1]
+             # Handle TZ naive/aware matching by using string slicing or normalize
+             # Assuming df.index is normalized from earlier logic.
+             # Actually df.index might be DatetimeIndex.
+             
+             # Robust Window Lookup
+             try:
+                 loc = df.index.get_loc(d)
+                 # Handle slice if Loc returns slice/array (duplicate index), take first
+                 if isinstance(loc, slice): loc = loc.start
+                 if isinstance(loc, np.ndarray): loc = loc[0]
+                 
+                 start = loc
+                 end = min(len(df), loc + 2) # [T, T+1] (slice is exclusive at end)
+                 
+                 window_rets = df['Idio_Return'].iloc[start:end].abs()
+                 
+                 if not window_rets.empty:
+                     # Top-2 Average Logic (User Req 1)
+                     top_2 = window_rets.nlargest(2)
+                     event_score = top_2.mean()
+                     event_peaks.append(event_score)
+                     
+                     # Directional Score (User Req 4)
+                     # Sum of residuals in window
+                     win_res_signed = df['Idio_Return'].iloc[start:end]
+                     event_dirs.append(win_res_signed.sum())
+                     
+             except:
+                 pass
+    else:
+        # Fallback
+        if not earnings_moves.empty:
+             event_peaks = earnings_moves['Idio_Return'].abs().tolist()
+             event_dirs = earnings_moves['Idio_Return'].tolist()
+
+    if event_peaks:
+        # Aggregation: Median (User Req 5 - Robustness)
+        e_stat = np.median(event_peaks)
+        e_cnt = len(event_peaks)
         
-    # Score is primarily based on Earnings Efficiency
-    # Score = Mean Abs Idio Return (Earnings) / Std Idio Return (Earnings)
-    # If no earnings, fallback to 0
-    if e_vol > 0:
-        score = e_mean / e_vol
+        # Direction Aggregation: Median of Sums
+        if event_dirs:
+            dir_score = np.median(event_dirs)
+        else:
+            dir_score = 0.0
+    else:
+        e_stat, e_cnt, dir_score = 0.0, 0, 0.0
+
+    # Recalculate Normal Volatility (strictly excluding ALL windows)
+    # merged_indices = union of all [T-2, T+2]
+    # We already have `expanded_indices` set if we used real dates.
+    # If fallback, we used top_volatile.
+    
+    # If we have real dates logic, use `expanded_indices` to exclude.
+    # But `expanded_indices` is local variable inside try block. 
+    # Let's reconstruct it or use what we have.
+    # Actually `valid_dates` is just the list of center dates.
+    
+    # To be precise, let's just use non_earnings_residuals BUT ensuring it excludes the user-defined window correctly.
+    # earlier logic: `earnings_residuals` was loc(valid_dates).
+    # IF valid_dates was just T, then we only excluded T.
+    # We need to exclude [T-2, T+2].
+    
+    # Re-filter Normal Vals
+    if len(valid_dates) > 0:
+        # Collect all "Event" indices
+        event_indices_set = set()
+        for d in valid_dates:
+             try:
+                 loc = df.index.get_loc(d)
+                 if isinstance(loc, slice): loc = loc.start
+                 if isinstance(loc, np.ndarray): loc = loc[0]
+                 start = max(0, loc - 2)
+                 end = min(len(df), loc + 3) # Slice exclusive
+                 for i in range(start, end):
+                     event_indices_set.add(df.index[i])
+             except: pass
+             
+        normal_df = df.loc[~df.index.isin(event_indices_set)]
+        if not normal_df.empty:
+            ne_vol = normal_df['Idio_Return'].std()
+        else:
+             ne_vol = df['Idio_Return'].std() # Fallback if everything is event (unlikely)
+             
+    # Final Score
+    if ne_vol > 0:
+        score = e_stat / ne_vol
     else:
         score = 0.0
         
-    # Basic daily metrics for output (Backward Compatibility)
-    # We can return "Earnings Day Mean" or "Overall Mean"? 
-    # User asked for "Earnings Idio Score", so let's stick to Earnings-specific metrics for the main "Return/Vol"
-    # BUT for the "Overview" table, maybe we want the pure Earnings metrics.
-    
-    daily_ret = e_mean # Avg absolute move on earnings day
-    daily_vol = e_vol
-    
-    # Pack comparative stats
+    # Return expanded dictionary including Direction
     comp_stats = {
-        'Earnings_Mean': e_mean,
-        'Earnings_Vol': e_vol,
+        'Earnings_Stat': e_stat, # Median of Top2Avg
         'Earnings_Count': e_cnt,
-        'NonEarnings_Mean': ne_mean,
-        'NonEarnings_Vol': ne_vol,
-        'NonEarnings_Count': ne_cnt,
-        'NonEarnings_Count': ne_cnt,
-        'Vol_Ratio': e_vol / ne_vol if ne_vol > 0 else 0.0,
-        'Date_Source': 'Real' if len(valid_real_dates) > 0 else 'Synthetic (Sampled)'
+        'Normal_Vol': ne_vol,
+        'Direction_Score': dir_score,
+        'Label': 'Bullish' if dir_score > 0 else 'Bearish'
     }
 
-    return score, df, betas, daily_ret, daily_vol, comp_stats
+    return score, df, betas, e_stat, ne_vol, comp_stats
 
 def process_uploaded_file(uploaded_file):
     """
@@ -733,6 +819,9 @@ def fetch_spy_proxy():
             # Using numpy log of simple return + 1 is equivalent
             # Or price/shifted_price
             df['Market'] = np.log(df['Market'] / df['Market'].shift(1))
+            
+            if df.empty: return None
+            
             return df.dropna()
     except:
         pass

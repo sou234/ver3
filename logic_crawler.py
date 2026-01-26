@@ -15,57 +15,72 @@ HEADERS = {
 }
 
 @st.cache_data(ttl=3600)
-def get_earnings_calendar(date_str=None):
+def get_earnings_calendar(start_date_str=None, days=7):
     """
-    Fetch earnings calendar from Nasdaq API for a specific date (YYYY-MM-DD).
-    If date_str is None, uses today.
+    Fetch earnings calendar from Nasdaq API for a range of dates.
+    Default: 7 days from start_date (Weekly view).
     """
-    if date_str is None:
-        date_str = datetime.datetime.now().strftime("%Y-%m-%d")
+    if start_date_str is None:
+        start_date = datetime.date.today()
+    else:
+        start_date = datetime.datetime.strptime(start_date_str, "%Y-%m-%d").date()
         
-    url = f"https://api.nasdaq.com/api/calendar/earnings?date={date_str}"
+    all_dfs = []
     
-    try:
-        response = requests.get(url, headers=HEADERS, verify=False, timeout=10)
+    # Progress bar usage inside a cached function is tricky/discouraged in Streamlit
+    # but we can just loop cleanly.
+    
+    for i in range(days):
+        target_date = start_date + datetime.timedelta(days=i)
+        date_str = target_date.strftime("%Y-%m-%d")
         
-        if response.status_code == 200:
-            data = response.json()
-            if data.get('data') and data['data'].get('rows'):
-                rows = data['data']['rows']
-                df = pd.DataFrame(rows)
-                
-                # Select and Rename columns
-                # Available: lastYearRptDt, lastYearEPS, time, symbol, name, marketCap, fiscalQuarterEnding, epsForecast, noOfEsts
-                cols_map = {
-                    'symbol': 'Ticker',
-                    'name': 'Company',
-                    'time': 'Time', # time-pre-market, time-after-hours
-                    'epsForecast': 'Est. EPS',
-                    'marketCap': 'Market Cap'
-                }
-                
-                # Filter columns that exist
-                existing_cols = [c for c in cols_map.keys() if c in df.columns]
-                df = df[existing_cols].rename(columns=cols_map)
-                
-                # Clean up 'Time' column
-                def clean_time(t):
-                    if 'pre-market' in str(t).lower(): return '☀️ Pre-Market'
-                    if 'after-hours' in str(t).lower(): return '🌙 After-Hours'
-                    return t
-                
-                if 'Time' in df.columns:
-                    df['Time'] = df['Time'].apply(clean_time)
-                
-                return df
-            else:
-                return pd.DataFrame() # No data found
-        else:
-            st.error(f"Nasdaq API Error: {response.status_code}")
-            return pd.DataFrame()
+        url = f"https://api.nasdaq.com/api/calendar/earnings?date={date_str}"
+        
+        try:
+            # Short sleep to be polite to API?
+            # time.sleep(0.1) 
+            response = requests.get(url, headers=HEADERS, verify=False, timeout=5)
             
-    except Exception as e:
-        st.error(f"Crawling Error: {e}")
+            if response.status_code == 200:
+                data = response.json()
+                if data.get('data') and data['data'].get('rows'):
+                    rows = data['data']['rows']
+                    df = pd.DataFrame(rows)
+                    
+                    # Columns Mapping
+                    cols_map = {
+                        'symbol': 'Ticker',
+                        'name': 'Company',
+                        'time': 'Time',
+                        'epsForecast': 'Est. EPS',
+                        'marketCap': 'Market Cap'
+                    }
+                    
+                    existing_cols = [c for c in cols_map.keys() if c in df.columns]
+                    df = df[existing_cols].rename(columns=cols_map)
+                    
+                    # Add Date Column
+                    df['Date'] = date_str
+                    
+                    all_dfs.append(df)
+        except:
+             pass
+             
+    if all_dfs:
+        final_df = pd.concat(all_dfs, ignore_index=True)
+        
+        # Clean Time
+        def clean_time(t):
+            t_str = str(t).lower()
+            if 'pre-market' in t_str: return '☀️ Pre-Market'
+            if 'after-hours' in t_str: return '🌙 After-Hours'
+            return t
+            
+        if 'Time' in final_df.columns:
+            final_df['Time'] = final_df['Time'].apply(clean_time)
+            
+        return final_df
+    else:
         return pd.DataFrame()
 
 @st.cache_data(ttl=3600)
@@ -112,32 +127,48 @@ def fetch_historical_price(ticker):
 @st.cache_data(ttl=86400)
 def fetch_historical_earnings_dates(ticker):
     """
-    Fetch historical earnings dates using Yahoo Finance (yfinance).
-    Returns a list of datetime objects (Earnings Dates) for the last 3 years.
+    Fetch historical earnings dates.
+    Priority: Nasdaq API > Yahoo Finance
     """
+    dates_list = []
+    
+    # 1. Try Nasdaq API (Earnings Surprise Endpoint has history)
+    try:
+        url = f"https://api.nasdaq.com/api/company/{ticker}/earnings-surprise"
+        # reuse HEADERS from top of file
+        response = requests.get(url, headers=HEADERS, verify=False, timeout=10)
+        if response.status_code == 200:
+            data = response.json()
+            if data.get('data') and data['data'].get('earningsSurpriseTable') and data['data']['earningsSurpriseTable'].get('rows'):
+                rows = data['data']['earningsSurpriseTable']['rows']
+                # row: { 'dateReported': 'Sep 29, 2024', ... }
+                for r in rows:
+                    dr = r.get('dateReported')
+                    if dr:
+                         # Parse date "Sep 29, 2024"
+                         try:
+                             dt = pd.to_datetime(dr)
+                             dates_list.append(dt)
+                         except:
+                             pass
+    except Exception as e:
+        print(f"Nasdaq Earnings Fetch Error ({ticker}): {e}")
+
+    if dates_list:
+        return dates_list
+
+    # 2. Fallback to Yahoo Finance
     import yfinance as yf
     try:
-        # yf.Ticker object
         t = yf.Ticker(ticker)
-        
-        # .earnings_dates is a DataFrame with Index = Date
-        # Note: This might require a valid session or proxy in some environments.
-        # But for 'Auto' mode we rely on yfinance generally working or using the session patch.
-        # Check if we need to apply the session patch globally? 
-        # logic_idio patches requests.Session, yf uses requests.
-        # So it might work.
-        
         cal = t.earnings_dates
         if cal is not None and not cal.empty:
             dates = cal.index.sort_values(ascending=False)
-            # Filter for last 3 years and past dates only
             cutoff = pd.Timestamp.now() - pd.DateOffset(years=3)
             now = pd.Timestamp.now()
-            
             valid_dates = dates[(dates >= cutoff) & (dates <= now)]
             return valid_dates.tolist()
-            
     except Exception as e:
-        print(f"Earnings History Fetch Error ({ticker}): {e}")
+        print(f"Yahoo Earnings Fetch Error ({ticker}): {e}")
         
     return []
