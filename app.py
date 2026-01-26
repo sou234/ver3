@@ -58,7 +58,7 @@ requests.Session.request = patched_request
 # ---------------------------------------------------------
 st.set_page_config(
     page_title="MAS Strategy Dashboard",
-    page_icon="🍊",
+    page_icon="mirae_icon.png",
     layout="wide",
     initial_sidebar_state="expanded"
 )
@@ -506,8 +506,8 @@ macro_metrics, macro_histories = fetch_market_data()
 # 3. 사이드바 구성
 # ---------------------------------------------------------
 with st.sidebar:
-    st.title("🍊 Mirae Asset")
-    st.subheader("고객자산배분본부")
+    st.image("mirae_icon.png", use_container_width=True)
+    st.subheader("고객자산배분본부 고객상품전략팀")
     st.caption("Strategy Dashboard V4.1")
     st.markdown("---")
     
@@ -516,6 +516,8 @@ with st.sidebar:
         "💎 Earnings Idio Score",
         "📊 Active ETF Analysis"
     ])
+    
+    # logic_backtest removed as redundant
     
     if st.button("🔄 새로고침"):
         st.cache_data.clear()
@@ -700,6 +702,8 @@ if menu == "📈 Super-Stock":
 
 
 # [TAB 3] TIMEFOLIO Analysis (경쟁사 분석)
+# [TAB 3] (Validator Removed)
+
 if menu == "📊 Active ETF Analysis":
     st.title("📊 Active ETF Daily Rebalancing")
     
@@ -1082,17 +1086,18 @@ if menu == "💎 Earnings Idio Score":
         *   $Sec$: Sector ETF (e.g., XLK)
         *   $SMB/HML/MOM$: Fama-French Style Factors
         
-        **3. 최종 점수 (Earnings Idio Score)**
-        실적 발표일(T-2 ~ T+2)에 발생한 충격의 강도를 측정합니다.
+        **3. 최종 점수 (GS Delta Score)**
+        실적 발표 기간(Earnings Window)이 종목의 수익 효율성(Alpha Efficiency)에 기여하는 정도를 측정합니다.
         $$
-        \text{Score} = \frac{\text{Mean}_q(\text{Impact}_q)}{\text{Normal Volatility}}
+        \Delta \text{Score} = \text{Score}_{incl} - \text{Score}_{excl}
         $$
-        *   **Impact**: Window 내 **상위 2일(Top-2)** 잔차 수익률(|$\epsilon$|)의 평균
-        *   **Aggregation**: 분기별 Impact의 **중앙값(Median)** 사용 (이상치 제거)
-        *   **Normal Vol**: 이벤트 기간을 모두 제외한 평상시 잔차의 표준편차
         
-        **4. Directional Score (방향성)**
-        실적 발표가 주가에 미치는 주된 방향을 나타냅니다. (Window 내 잔차 합의 중앙값)
+        *   **$\text{Score}$ (Efficiency)**: 변동성 대비 순수 수익(잔차 절대값)의 비율 (Sharpe 유사 개념)
+            $$ \text{Score} = \frac{\text{Mean}(|\epsilon|) \times 252}{\text{Std}(\epsilon) \times \sqrt{252}} $$
+        *   **$\text{Score}_{incl}$**: 전체 기간(Earnings 포함)의 효율성
+        *   **$\text{Score}_{excl}$**: 실적 발표일($T-2 \sim T+2$)을 **제외**한 기간의 효율성
+        
+        **해석**: 점수가 높을수록($+$), 변동성을 감수하고서라도 **실적 발표를 가져가는 것이 유리**하다는 뜻입니다. (Earnings Alpha 존재)
         """)
 
     # 사이드바: 종목 선택
@@ -1344,7 +1349,7 @@ if menu == "💎 Earnings Idio Score":
                 market_data = logic_idio.enrich_with_factors(market_data, ticker)
                 
                 # 2. Calculate (Unpack 6 values)
-                score, earnings_events, betas, d_ret, d_vol, cp = logic_idio.calculate_idio_score(market_data, ticker)
+                score, df, betas, d_ret, d_vol, cp = logic_idio.calculate_idio_score(market_data, ticker)
                 
                 # [Safety] Module Reload Issue 방지: 혹시라도 float가 리턴되면 빈 dict로 변환
                 if not isinstance(cp, dict): cp = {}
@@ -1352,25 +1357,20 @@ if menu == "💎 Earnings Idio Score":
                 
                 # --- 결과 화면 ---
                 
-                # 1. 스코어 카드
+                # 1. 스코어 카드 (GS Only)
                 col1, col2, col3, col4, col5 = st.columns(5)
-                col1.metric("Earnings Idio Score", f"{score:.2f}", 
-                            delta="High Impact" if score > 3.0 else "Normal",
-                            help="Median(Top-2 Avgs) / Normal Volatility")
+                col1.metric("GS Idio Score (Delta)", f"{score:.2f}", 
+                            delta="High Alpha" if score > 0.5 else "Low",
+                            help="Difference between Inclusive and Exclusive Efficiency Scores")
                 
-                # Directional Score Display
-                dir_score = cp.get('Direction_Score', 0.0)
-                dir_label = "Bullish" if dir_score > 0 else "Bearish"
-                dir_color = "normal" 
-                if abs(dir_score) > 0.05: dir_color = "inverse" # Highlight if significant direction
+                # Breakdown
+                gs_incl = cp.get('GS_Score_Incl', 0.0)
+                gs_excl = cp.get('GS_Score_Excl', 0.0)
                 
-                col2.metric("Directional Score", f"{dir_score*100:.2f}%", 
-                            delta=dir_label, 
-                            help="Median Sum of Residuals (Window T-2~T+2)")
-
-                col3.metric("Normal Volatility", f"{cp.get('Normal_Vol', 0.0)*100:.2f}%", help="평상시(Non-Event) 변동성")
+                col2.metric("Efficiency (Included)", f"{gs_incl:.2f}", help="Sharpe of Abs Residuals (Full Period)")
+                col3.metric("Efficiency (Excluded)", f"{gs_excl:.2f}", help="Sharpe of Abs Residuals (Ex-Earnings)")
                 
-                col4.metric("분석된 이벤트", f"{len(earnings_events)}회")
+                col4.metric("분석된 이벤트", f"{cp.get('Event_Count', 0)}회")
                 col5.metric("Factor Model", "5-Factor" if 'MOM' in betas else "4-Factor")
 
                 # 2. Beta Breakdown
@@ -1385,78 +1385,92 @@ if menu == "💎 Earnings Idio Score":
                 st.divider()
 
                 # 3. Comparative Analysis (New Section)
-                st.subheader("⚖️ Comparative Analysis: Earnings vs Normal")
-                st.caption("실적 발표일의 'Top-2 Peak' 충격과 평상시를 비교합니다.")
+                st.subheader("⚖️ Comparative Analysis: Earnings Contribution")
+                st.caption("실적 포함(Inclusive) vs 제외(Exclusive) 효율성 비교")
                 
                 c1, c2, c3 = st.columns(3)
                 
                 with c1:
-                    st.markdown("#### Earnings Impact")
-                    st.metric("Median Peak (Top-2)", f"{cp.get('Earnings_Stat',0)*100:.2f}%")
-                    st.metric("Direction", dir_label)
+                    st.markdown("#### Inclusive (Full)")
+                    st.metric("Mean Abs (Ann)", f"{cp.get('Mean_Incl',0)*100:.1f}%")
+                    st.metric("Vol (Ann)", f"{cp.get('Vol_Incl',0)*100:.1f}%")
+                    st.metric("Score", f"{gs_incl:.2f}")
                     
                 with c2:
-                    st.markdown("#### Normal Days")
-                    st.metric("Normal Volatility", f"{cp.get('Normal_Vol',0)*100:.2f}%")
+                    st.markdown("#### Exclusive (No Earnings)")
+                    st.metric("Mean Abs (Ann)", f"{cp.get('Mean_Excl',0)*100:.1f}%")
+                    st.metric("Vol (Ann)", f"{cp.get('Vol_Excl',0)*100:.1f}%")
+                    st.metric("Score", f"{gs_excl:.2f}")
                     
                 with c3:
-                    st.markdown("#### Impact Multiplier")
-                    st.metric("Score (Multiplier)", f"{score:.1f}x", 
-                              delta="Significant" if score > 3.0 else "Normal")
-                    st.info(f"실적 발표 날에는 평소보다 변동성이 **{score:.1f}배** 증가합니다.")
+                    st.markdown("#### Earnings Impact")
+                    st.metric("Delta Score", f"{score:.2f}", 
+                              delta="Positive" if score > 0 else "Negative")
+                    st.info(f"실적 기간이 포함됨으로써 점수가 **{score:+.2f}** 만큼 변화했습니다.")
 
-                # Comparative Chart
+                # Comparative Chart (Bar)
+                # ... (Keeping existing Bar Chart or removing?)
+                # User asked for "Earning 포함과 제외 비교".
+                # Bar chart of Scores is good.
+                # Adding Cumulative Line Chart is BETTER.
+                
+                # 1. Bar Chart (Scores)
                 comp_df = pd.DataFrame({
-                    'Condition': ['Earnings Days', 'Non-Earnings Days'],
-                    'Volatility': [cp.get('Earnings_Vol', 0.0), cp.get('NonEarnings_Vol', 0.0)],
-                    'Mean Return': [cp.get('Earnings_Mean', 0.0), cp.get('NonEarnings_Mean', 0.0)]
+                    'Condition': ['Inclusive (With Earnings)', 'Exclusive (Without Earnings)'],
+                    'GS Score': [gs_incl, gs_excl]
                 })
+                fig_bar = px.bar(comp_df, x='Condition', y='GS Score', color='Condition', 
+                                 title="Efficiency Score Comparison", text_auto='.2f')
+                st.plotly_chart(fig_bar, use_container_width=True)
                 
-                fig_comp = go.Figure(data=[
-                    go.Bar(name='Volatility', x=comp_df['Condition'], y=comp_df['Volatility'], marker_color=['#FF4B4B', '#60b4ff']),
-                    # go.Bar(name='Mean Return', x=comp_df['Condition'], y=comp_df['Mean Return'])
-                ])
-                fig_comp.update_layout(title_text='Volatility Comparison', barmode='group')
-                st.plotly_chart(fig_comp, use_container_width=True)
-
-                st.divider()
-
-                # 2. 인사이트 메시지 (골드만삭스 로직 적용 + Direction)
-                if score > 3.0:
-                    sentiment = "상승(Bullish)" if dir_score > 0 else "하락(Bearish)"
-                    st.success(f"**🔥 Earnings Mover:** 이 종목은 실적 발표 때 평균적으로 **{score:.1f}배** 더 크게 움직이며, 주로 **{sentiment}** 방향성을 띱니다.")
-                elif score < 2.0:
-                    st.warning(f"**🛡️ Stable Stock:** 실적 발표 영향이 미미합니다. (변동성 배수: {score:.1f}x)")
+                # 2. Cumulative Equity Curve (The "Proof")
+                st.subheader("📈 Cumulative Alpha (Idiosyncratic Return)")
+                st.caption("실적 발표 기간이 장기 성과에 미치는 영향을 시각화합니다.")
                 
-                st.divider()
-
-                # 3. 그래프: Alpha vs Beta 분해
-                
-                st.divider()
-
-                # 3. 그래프: Alpha vs Beta 분해
-                st.subheader("📊 실적 발표일 수익률 분해 ")
-                st.caption(f"빨간색 막대(Idio)가 길수록 시장 영향 없이 개별 실적 이슈로만 움직였다는 뜻입니다.")
-            
-
-
-                try:
-                    fig = go.Figure()
-                    fig.add_trace(go.Bar(x=earnings_events.index, y=earnings_events['Beta_Return'], 
-                                         name='Beta (시장+섹터 효과)', marker_color='lightgray'))
-                    fig.add_trace(go.Bar(x=earnings_events.index, y=earnings_events['Idio_Return'], 
-                                         name='Idio (고유 실적 반응)', marker_color='#E31837')) # 골드만 레드
+                if 'Series_Excl' in cp:
+                    # Incl Series (Full Idio Return)
+                    s_incl = df['Idio_Return'].fillna(0)
                     
-                    fig.update_layout(barmode='relative', title="Earnings Day Return Decomposition", xaxis_title="날짜", yaxis_title="수익률")
-                    st.plotly_chart(fig, use_container_width=True)
-                except Exception as e:
-                    st.error(f"차트 생성 오류: {e}")
+                    # Excl Series 
+                    # logic_idio returns Series_Excl which contains only non-event days.
+                    # We need to reindex it to full index to plot, filling removed days with 0.0 (Cash)
+                    s_excl = cp['Series_Excl'].reindex(df.index).fillna(0.0)
+                    
+                    # Cumulative Sum
+                    cum_incl = s_incl.cumsum()
+                    cum_excl = s_excl.cumsum()
+                    
+                    chart_data = pd.DataFrame({
+                        'With Earnings (실적 포함)': cum_incl,
+                        'Without Earnings (실적 제외)': cum_excl
+                    })
+                    
+                    fig_line = px.line(chart_data, title="Cumulative Idiosyncratic Return (Alpha Accumulation)",
+                                       labels={'value': 'Cum Residual Return', 'index': 'Date'})
+                    # Provide clearer colors
+                    fig_line.update_traces(line=dict(width=2))
+                    st.plotly_chart(fig_line, use_container_width=True)
+                    
+                    diff_val = cum_incl.iloc[-1] - cum_excl.iloc[-1]
+                    st.info(f"💡 **분석 결과**: 실적 발표 기간을 포함했을 때 누적 성과가 **{diff_val*100:+.1f}%** 더 {'좋습니다' if diff_val>0 else '나쁩니다'}.")
+                else:
+                    st.warning("상세 시계열 데이터를 불러오지 못했습니다.")
+
+                st.divider()
+
+                # 2. 인사이트 메시지 (GS Delta Logic)
+                if score > 0.5:
+                    st.success(f"**🔥 High Impact:** 실적 발표가 이 종목의 변동성 대비 수익 효율을 크게 높여줍니다. (Delta: +{score:.2f})")
+                elif score < 0.1:
+                    st.warning(f"**🛡️ Low Impact:** 실적 발표를 제외해도 효율성 차이가 거의 없습니다.")
                 
-                # 4. 상세 데이터
-                with st.expander("🔎 상세 데이터 보기"):
-                    if not earnings_events.empty:
-                        # Display all relevant columns
-                        st.dataframe(earnings_events[['Market', 'Sector', 'Stock', 'Beta_Return', 'Idio_Return']].style.format("{:.2%}").background_gradient(subset=['Idio_Return'], cmap='RdBu'))
+                st.divider()
+
+                # 3. 그래프: Alpha vs Beta 분해
+                
+                st.divider()
+
+
             else:
                  # Data Collection Failed (Detailed Feedback)
                  st.warning(f"⚠️ **'{ticker}' 데이터 수집에 실패했습니다.**")
