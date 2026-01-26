@@ -1174,6 +1174,17 @@ if menu == "💎 Earnings Idio Score":
         st.metric("VIX Index (Market Fear)", f"{vix_val:.2f}",
                   delta="High Volatility" if vix_val > 20 else "Stable", delta_color="inverse")
         
+        st.info("""
+        **💡 GS Strategy Insight: VIX 수준에 따른 실적 이벤트 성과 **
+        
+        **"VIX 수준은 실적 이벤트 트레이드 성과에 유의미한 영향을 미침 (VIX 35~45 구간 우수)"**
+
+        - **🎯 최적 구간 (VIX 35~45):** 거시 불확실성이 높은 환경에서 실적 발표가 **불확실성 해소(Relief Rally)**로 작용. 
+             (임의소비재, 기술주 유리).
+        - **📉 안정~불안 (VIX 35 이하):** 주가 변동폭은 작고 방향성은 불확실하나, 평균적으로 시장을 **소폭 상회 **.
+        - **⚠️ 위험 구간 (VIX 45 초과):** 극단적 공포 국면. 실적 발표로 신뢰 회복이 어려우며, 시장 대비 **언더퍼폼**.
+        """)
+        
         st.divider()
         
         # 2. Earnings Calendar & Batch Analysis
