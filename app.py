@@ -506,7 +506,11 @@ macro_metrics, macro_histories = fetch_market_data()
 # 3. 사이드바 구성
 # ---------------------------------------------------------
 with st.sidebar:
-    st.image("mirae_icon.png", use_container_width=True)
+    import os
+    if os.path.exists("mirae_icon.png"):
+        st.image("mirae_icon.png", use_container_width=True)
+    else:
+        st.title("🍊 Mirae Asset")
     st.subheader("고객자산배분본부 고객상품전략팀")
     st.caption("Strategy Dashboard V4.1")
     st.markdown("---")
