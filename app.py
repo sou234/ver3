@@ -516,8 +516,8 @@ with st.sidebar:
     st.markdown("---")
     
     menu = st.radio("메뉴 선택", [
-        "📈 Super-Stock",
-        "💎 Earnings Idio Score",
+        "MS Monitoring",
+        "Earnings Event Trading",
         "📊 Active ETF Analysis"
     ])
     
@@ -532,7 +532,7 @@ with st.sidebar:
 # ---------------------------------------------------------
 
 # [TAB 2] Super-Stock (StatCounter) - 팀장님 개인 업무
-if menu == "📈 Super-Stock":
+if menu == "MS Monitoring":
     st.header("📈 Super-Stock (Global Market Share)")
     st.caption("Data Source: StatCounter Global Stats")
     
@@ -1068,7 +1068,7 @@ if menu == "📊 Active ETF Analysis":
     st.link_button("🌐 공식 상세페이지 바로가기", f"https://timefolioetf.co.kr/m11_view.php?idx={target_idx}")
 
 # [TAB 4] Earnings Idio Score (Goldman Sachs Logic)
-if menu == "💎 Earnings Idio Score":
+if menu == "Earnings Event Trading":
     if logic_idio is None:
         st.error("⚠️ 필수 라이브러리(scikit-learn)가 설치되지 않았습니다. 관리자에게 문의하세요.")
         st.stop()
@@ -1225,9 +1225,21 @@ if menu == "💎 Earnings Idio Score":
                             
                             # score, events, betas, daily_ret, daily_vol, comp_stats
                             scr, _, _, d_ret, d_vol, _ = logic_idio.calculate_idio_score(m_data, t)
+                            
+                            # [New] VIX Regime Adjustment
+                            vix_mult = 1.0
+                            if 35 <= vix_val <= 45:
+                                vix_mult = 1.2 # Optimal Zone Boost
+                            elif vix_val > 45:
+                                vix_mult = 0.8 # Danger Zone Penalty
+                                
+                            adj_score = scr * vix_mult
+                            
                             results.append({
                                 'Ticker': t,
-                                'Idio Score': scr,
+                                'Idio Score': adj_score, # Adjusted Score
+                                'Raw Score': scr,        # Original
+                                'VIX Mult': vix_mult,
                                 # 'Efficiency' removed
                                 'Avg Daily Returns': d_ret,
                                 'Daily Volatility': d_vol,
@@ -1238,6 +1250,8 @@ if menu == "💎 Earnings Idio Score":
                             results.append({
                                 'Ticker': t,
                                 'Idio Score': 0.0,
+                                'Raw Score': 0.0,
+                                'VIX Mult': 1.0,
                                 'Avg Daily Returns': 0.0,
                                 'Daily Volatility': 0.0,
                                 'Status': 'Data Fail'
@@ -1247,6 +1261,8 @@ if menu == "💎 Earnings Idio Score":
                          results.append({
                             'Ticker': t,
                             'Idio Score': 0.0,
+                            'Raw Score': 0.0,
+                            'VIX Mult': 1.0,
                             'Avg Daily Returns': 0.0,
                             'Daily Volatility': 0.0,
                             'Status': f'Error: {str(e)}'
@@ -1266,6 +1282,7 @@ if menu == "💎 Earnings Idio Score":
             
             # Display Results if available
             if st.session_state.get('batch_results') is not None:
+                st.caption(f"ℹ️ **VIX Weighting Active:** 현재 VIX({vix_val:.2f}) 국면을 반영하여 점수가 보정되었습니다. (Optim: x1.2, Danger: x0.8)")
                 st.dataframe(st.session_state['batch_results'].style.background_gradient(subset=['Idio Score'], cmap='Reds'), hide_index=True)
             else:
                 # Show placeholder column
