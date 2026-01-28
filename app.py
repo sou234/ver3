@@ -537,11 +537,11 @@ if menu == "📈 MS Monitoring":
     st.caption("Data Source: StatCounter Global Stats")
     
     # 메인 탭 분리: 검색엔진 vs 모바일 OS
-    main_tab1, main_tab2 = st.tabs(["🔍 Operating System Market Share", "📱 Browser Market Share"])
+    main_tab1, main_tab2 = st.tabs(["🔍 Browser Market Share ", "📱 Operating System Market Share"])
     
     # [Tab 1] 검색엔진 (기존 기능)
     with main_tab1:
-        st.subheader("Global Operating System Market Share")
+        st.subheader("Global Browser Market Share")
         st.caption("Google vs Bing vs Yahoo vs Other")
         
         sub_tab1, sub_tab2, sub_tab3 = st.tabs(["🖥️+📱 Desktop & Mobile", "🖥️ Desktop", "📱 Mobile"])
