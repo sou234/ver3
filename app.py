@@ -516,8 +516,8 @@ with st.sidebar:
     st.markdown("---")
     
     menu = st.radio("메뉴 선택", [
-        "MS Monitoring",
-        "Earnings Event Trading",
+        "📈 MS Monitoring",
+        "💎 Earnings Event Trading",
         "📊 Active ETF Analysis"
     ])
     
@@ -532,7 +532,7 @@ with st.sidebar:
 # ---------------------------------------------------------
 
 # [TAB 2] Super-Stock (StatCounter) - 팀장님 개인 업무
-if menu == "MS Monitoring":
+if menu == "📈 MS Monitoring":
     st.header("📈 Super-Stock (Global Market Share)")
     st.caption("Data Source: StatCounter Global Stats")
     
@@ -1068,7 +1068,7 @@ if menu == "📊 Active ETF Analysis":
     st.link_button("🌐 공식 상세페이지 바로가기", f"https://timefolioetf.co.kr/m11_view.php?idx={target_idx}")
 
 # [TAB 4] Earnings Idio Score (Goldman Sachs Logic)
-if menu == "Earnings Event Trading":
+if menu == "💎 Earnings Event Trading":
     if logic_idio is None:
         st.error("⚠️ 필수 라이브러리(scikit-learn)가 설치되지 않았습니다. 관리자에게 문의하세요.")
         st.stop()
