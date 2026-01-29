@@ -1401,7 +1401,13 @@ if menu == "💎 Earnings Event Trading":
         st.caption("💡 **Earnings Surprise** = (실제 실적 - 예상 실적) / |예상 실적| × 100 (시장 기대치 대비 상회/하회 정도)")
         
         # Fetch History
-        e_hist = logic_crawler.fetch_earnings_history_rich(ticker)
+        try:
+             e_hist = logic_crawler.fetch_earnings_history_rich(ticker)
+        except AttributeError:
+             st.error("⚠️ `logic_crawler.py` 파일이 최신 버전이 아닙니다. Github에 파일을 다시 업로드해주세요.")
+             e_hist = pd.DataFrame()
+        except Exception as e:
+             e_hist = pd.DataFrame()
         
         if not e_hist.empty:
             # Calculate Price Moves
