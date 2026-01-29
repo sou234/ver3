@@ -290,44 +290,72 @@ def fetch_earnings_history_rich(ticker):
 @st.cache_data(ttl=3600)
 def fetch_analyst_consensus(ticker):
     """
-    Fetch Analyst Consensus using Yahoo Finance (yfinance).
+    Fetch Analyst Consensus using Yahoo Finance (yfinance) with Scraping Fallback.
     Returns dict with keys: targetMean, targetHigh, targetLow, recommendMean, recommendKey, analystCount
     """
     import yfinance as yf
+    from bs4 import BeautifulSoup
+    
     result = {
         'targetMean': None,
         'targetHigh': None,
         'targetLow': None,
         'recommendMean': None, # 1.0 (Strong Buy) ~ 5.0 (Sell)
-        'recommendKey': None, # 'buy', 'hold', etc.
+        'recommendKey': None, 
         'analystCount': 0
     }
     
+    # Method 1: yfinance API (Standard)
     try:
-        # SSL Patch Session
         session = requests.Session()
         session.verify = False
         session.headers.update({
             "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
         })
         
-        # Pass session to Ticker
         t = yf.Ticker(ticker, session=session)
-        
-        # Access info (which triggers the request)
         info = t.info
         
-        if info:
+        if info and 'targetMeanPrice' in info:
             result['targetMean'] = info.get('targetMeanPrice')
             result['targetHigh'] = info.get('targetHighPrice')
             result['targetLow'] = info.get('targetLowPrice')
             result['recommendMean'] = info.get('recommendationMean')
             result['recommendKey'] = info.get('recommendationKey')
             result['analystCount'] = info.get('numberOfAnalystOpinions', 0)
+            return result
             
-    except Exception as e:
-        # Fallback: try without session if patched globally, or just pass
+    except Exception:
         pass
         
+    # Method 2: Scraping Fallback (Yahoo Finance Quote Page)
+    try:
+        url = f"https://finance.yahoo.com/quote/{ticker}"
+        r = requests.get(url, headers={'User-Agent': 'Mozilla/5.0'}, verify=False, timeout=5)
+        
+        if r.status_code == 200:
+            soup = BeautifulSoup(r.text, 'html.parser')
+            
+            # Target Price: Look for data-test="ONE_YEAR_TARGET_PRICE-value"
+            # Note: Class names change, data-attributes are more stable
+            # Or regex search
+            
+            # Simple check for "1y Target Est"
+            # The structure is often: <td ... data-test="ONE_YEAR_TARGET_PRICE-value">123.45</td>
+            target_tag = soup.find(attrs={"data-test": "ONE_YEAR_TARGET_PRICE-value"})
+            if target_tag:
+                 val = target_tag.text.strip().replace(',', '')
+                 if val and val != 'N/A':
+                      result['targetMean'] = float(val)
+            
+            # Analyst Rating (e.g. 1.8) is harder to scrape reliably from summary page.
+            # It's usually in the "Analysis" tab: https://finance.yahoo.com/quote/{ticker}/analysis
+            
+            # If we got Target Price, that's partial success.
+            # Let's try Analysis page for more if needed, but keeping it simple for now.
+            
+    except Exception:
+        pass
+
     return result
 
