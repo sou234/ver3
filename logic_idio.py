@@ -11,15 +11,9 @@ import io
 # ---------------------------------------------------------
 # SSL Patch for Robustness (duplicated from app.py to ensure safety)
 # ---------------------------------------------------------
+# SSL Patch for Robustness
 urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
-# Check if already patched to avoid recursion if imported multiple times
-if not getattr(requests.Session.request, "_patched", False):
-    original_request = requests.Session.request
-    def patched_request(self, method, url, *args, **kwargs):
-        kwargs['verify'] = False
-        return original_request(self, method, url, *args, **kwargs)
-    patched_request._patched = True
-    requests.Session.request = patched_request
+# Requests patching moved to app.py to prevent RecursionError
 
 # ---------------------------------------------------------
 # Constants & Config
