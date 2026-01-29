@@ -1391,7 +1391,7 @@ if menu == "💎 Earnings Event Trading":
                 fig_g.update_layout(height=180, margin=dict(l=20,r=20,t=30,b=20))
                 st.plotly_chart(fig_g, use_container_width=True)
         else:
-            st.info("Analyst consensus data currently unavailable (Yahoo Finance source).")
+            st.info("Analyst consensus data currently unavailable (Source: Yahoo Finance / Finviz).")
 
         st.divider()
 
