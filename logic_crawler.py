@@ -335,27 +335,61 @@ def fetch_analyst_consensus(ticker):
         
         if r.status_code == 200:
             soup = BeautifulSoup(r.text, 'html.parser')
-            
-            # Target Price: Look for data-test="ONE_YEAR_TARGET_PRICE-value"
-            # Note: Class names change, data-attributes are more stable
-            # Or regex search
-            
-            # Simple check for "1y Target Est"
-            # The structure is often: <td ... data-test="ONE_YEAR_TARGET_PRICE-value">123.45</td>
             target_tag = soup.find(attrs={"data-test": "ONE_YEAR_TARGET_PRICE-value"})
             if target_tag:
                  val = target_tag.text.strip().replace(',', '')
                  if val and val != 'N/A':
                       result['targetMean'] = float(val)
-            
-            # Analyst Rating (e.g. 1.8) is harder to scrape reliably from summary page.
-            # It's usually in the "Analysis" tab: https://finance.yahoo.com/quote/{ticker}/analysis
-            
-            # If we got Target Price, that's partial success.
-            # Let's try Analysis page for more if needed, but keeping it simple for now.
+                      
+            # Also try Rec Key from Yahoo scraping if possible
+            # (Keeping it simple to minimize breakage)
             
     except Exception:
         pass
 
+    # Method 3: Finviz Scraping (Robust Backup)
+    if result['targetMean'] is None:
+        try:
+            url = f"https://finviz.com/quote.ashx?t={ticker}"
+            r = requests.get(url, headers={'User-Agent': 'Mozilla/5.0'}, verify=False, timeout=5)
+            if r.status_code == 200:
+                soup = BeautifulSoup(r.text, 'html.parser')
+                
+                # Target Price
+                # Finding by text is risky if localization changes, but Finviz is English-only usually.
+                # Structure: <td ...>Target Price</td><td ...><b>180.00</b></td>
+                tp_node = soup.find(string="Target Price")
+                if tp_node:
+                    parent = tp_node.parent # td
+                    if parent.name == 'td':
+                        val_node = parent.find_next_sibling('td')
+                        if val_node:
+                             val = val_node.text.strip()
+                             if val and val != '-':
+                                 result['targetMean'] = float(val)
+                                 
+                # Recom
+                rec_node = soup.find(string="Recom")
+                if rec_node:
+                    parent = rec_node.parent
+                    if parent.name == 'td':
+                        val_node = parent.find_next_sibling('td')
+                        if val_node:
+                             val = val_node.text.strip() # e.g. "1.80"
+                             if val and val != '-':
+                                 try:
+                                     # Convert 1.0-5.0 score to Key
+                                     score = float(val)
+                                     result['recommendMean'] = score
+                                     if score <= 1.5: result['recommendKey'] = 'strong buy'
+                                     elif score <= 2.5: result['recommendKey'] = 'buy'
+                                     elif score <= 3.5: result['recommendKey'] = 'hold'
+                                     elif score <= 4.5: result['recommendKey'] = 'sell'
+                                     else: result['recommendKey'] = 'strong sell'
+                                 except:
+                                     pass
+        except Exception:
+            pass
+            
     return result
 
