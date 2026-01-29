@@ -1465,19 +1465,20 @@ if menu == "💎 Earnings Event Trading":
             rename_map = {
                 'Est EPS': 'Est EPS (예상)',
                 'Act EPS': 'Act EPS (실제)',
-                'Surprise(%)': 'Surprise (서프라이즈%)'
+                'Surprise(%)': 'Surprise (서프라이즈%)',
+                'Move (Abs %)': 'Move (변동폭 %)'
             }
             e_hist_disp.rename(columns=rename_map, inplace=True)
             
             st.dataframe(
-                e_hist_disp[['Date', 'Est EPS (예상)', 'Act EPS (실제)', 'Surprise (서프라이즈%)', 'Move (Abs %)']].style
+                e_hist_disp[['Date', 'Est EPS (예상)', 'Act EPS (실제)', 'Surprise (서프라이즈%)', 'Move (변동폭 %)']].style
                 .format({
                     'Est EPS (예상)': '{:.2f}', 
                     'Act EPS (실제)': '{:.2f}', 
                     'Surprise (서프라이즈%)': '{:.2f}%',
-                    'Move (Abs %)': '{:.2f}%'
+                    'Move (변동폭 %)': '{:.2f}%'
                 })
-                .map(style_moves, subset=['Move (Abs %)']),
+                .map(style_moves, subset=['Move (변동폭 %)']),
                 use_container_width=True,
                 hide_index=True
             )
