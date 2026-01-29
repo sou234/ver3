@@ -6,12 +6,18 @@ import re
 from datetime import datetime, timedelta
 
 # Global SSL Patch
+# Global SSL Patch
 urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
-original_request = requests.Session.request
-def patched_request(self, method, url, *args, **kwargs):
-    kwargs['verify'] = False
-    return original_request(self, method, url, *args, **kwargs)
-requests.Session.request = patched_request
+
+# [FIX] RecursionError 방지: 이미 패치되었는지 확인
+if not getattr(requests.Session.request, "_patched", False):
+    original_request = requests.Session.request
+    def patched_request(self, method, url, *args, **kwargs):
+        kwargs['verify'] = False
+        return original_request(self, method, url, *args, **kwargs)
+    
+    patched_request._patched = True
+    requests.Session.request = patched_request
 
 def get_naver_consensus_change(ticker):
     """
