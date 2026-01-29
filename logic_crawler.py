@@ -356,13 +356,20 @@ def fetch_analyst_consensus(ticker):
                 soup = BeautifulSoup(r.text, 'html.parser')
                 
                 # Target Price
-                # Finding by text is risky if localization changes, but Finviz is English-only usually.
-                # Structure: <td ...>Target Price</td><td ...><b>180.00</b></td>
+                # Finding by text
                 tp_node = soup.find(string="Target Price")
                 if tp_node:
-                    parent = tp_node.parent # td
-                    if parent.name == 'td':
-                        val_node = parent.find_next_sibling('td')
+                    # Traverse up to find the TR or just find the next TD in the structure
+                    # Usually: <td class="snapshot-td2-cp">Target Price</td><td class="snapshot-td2-cp"><b>180.00</b></td>
+                    # If tp_node is inside <a>, parent is <a>, parent.parent is <td>
+                    
+                    curr = tp_node
+                    # Go up until we hit a TD
+                    while curr and curr.name != 'td':
+                        curr = curr.parent
+                    
+                    if curr and curr.name == 'td':
+                        val_node = curr.find_next_sibling('td')
                         if val_node:
                              val = val_node.text.strip()
                              if val and val != '-':
@@ -371,14 +378,16 @@ def fetch_analyst_consensus(ticker):
                 # Recom
                 rec_node = soup.find(string="Recom")
                 if rec_node:
-                    parent = rec_node.parent
-                    if parent.name == 'td':
-                        val_node = parent.find_next_sibling('td')
+                    curr = rec_node
+                    while curr and curr.name != 'td':
+                         curr = curr.parent
+                         
+                    if curr and curr.name == 'td':
+                        val_node = curr.find_next_sibling('td')
                         if val_node:
-                             val = val_node.text.strip() # e.g. "1.80"
+                             val = val_node.text.strip()
                              if val and val != '-':
                                  try:
-                                     # Convert 1.0-5.0 score to Key
                                      score = float(val)
                                      result['recommendMean'] = score
                                      if score <= 1.5: result['recommendKey'] = 'strong buy'
