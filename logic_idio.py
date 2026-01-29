@@ -24,13 +24,50 @@ if not getattr(requests.Session.request, "_patched", False):
 # ---------------------------------------------------------
 # Constants & Config
 # ---------------------------------------------------------
-# 골드만삭스 로직: 섹터 베타 제거용 벤치마크 매핑
+
+# 골드만삭스 로직: 섹터 베타 제거용 벤치마크 매핑 (Legacy + GICS)
+# English (Yahoo Finance) -> Sector ETF
+GICS_SECTOR_MAP = {
+    'Technology': 'XLK', 'Information Technology': 'XLK',
+    'Health Care': 'XLV', 'Healthcare': 'XLV',
+    'Financials': 'XLF', 'Financial Services': 'XLF',
+    'Consumer Discretionary': 'XLY', 'Consumer Cyclical': 'XLY',
+    'Consumer Staples': 'XLP', 'Consumer Defensive': 'XLP',
+    'Energy': 'XLE',
+    'Industrials': 'XLI',
+    'Utilities': 'XLU',
+    'Materials': 'XLB', 'Basic Materials': 'XLB',
+    'Communication Services': 'XLC',
+    'Real Estate': 'XLRE'
+}
+
+# Legacy Korean Map (Fallback)
 SECTOR_BENCHMARKS = {
     '정보기술': 'XLK', '커뮤니케이션 서비스': 'XLC', '건강관리': 'XLV',
     '산업재': 'XLI', '자유소비재': 'XLY', '필수소비재': 'XLP',
     '금융': 'XLF', '부동산': 'XLRE', '에너지': 'XLE', '소재': 'XLB',
     '유틸리티': 'XLU', '지수': '^GSPC' # 기본값
 }
+
+def get_ticker_sector(ticker):
+    """
+    Fetch Sector string from Yahoo Finance (Live).
+    Returns sector name (e.g. 'Technology') or None.
+    """
+    try:
+        session = requests.Session()
+        session.verify = False
+        t = yf.Ticker(ticker, session=session)
+        
+        # Fast info fetch
+        info = t.fast_info
+        if hasattr(info, 'sector'):
+            return info.sector
+        
+        # Fallback to full info
+        return t.info.get('sector')
+    except:
+        return None
 
 def load_universe():
     """
@@ -261,6 +298,9 @@ def fetch_spy_proxy():
     try:
         session = requests.Session()
         session.verify = False
+        session.headers.update({
+            "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.04472.124 Safari/537.36"
+        })
         dat = yf.download("SPY", period="3y", session=session, progress=False)
         if not dat.empty:
             # Prefer 'Adj Close', fall back to 'Close'
@@ -295,24 +335,42 @@ def enrich_with_factors(df, ticker):
     """
     df = df.copy()
     
-    # 1. Sector Factor (if missing)
+    # 1. Sector Factor (Dynamic > Static)
     if 'Sector' not in df.columns:
+        etf_ticker = None
+        
+        # [Strategy A] Dynamic (Yahoo Finance)
         try:
-            universe = load_universe()
-            if ticker in universe['Ticker'].values:
-                # Get Sector Name from Universe
-                sec_name = universe.loc[universe['Ticker'] == ticker, 'Sector'].iloc[0]
-                # Map to ETF
-                etf_ticker = SECTOR_BENCHMARKS.get(sec_name, 'XLK') # Default
-                
-                # Fetch ETF Data
-                etf_series = fetch_yahoo_etf(etf_ticker)
-                if etf_series is not None:
-                    etf_ret = etf_series.pct_change().dropna()
-                    etf_ret.name = 'Sector'
-                    df = df.join(etf_ret, how='inner')
+            live_sector = get_ticker_sector(ticker)
+            if live_sector:
+                # Map English Sector -> ETF
+                # Fuzzy matching handled by Dictionary keys (e.g. key aliases)
+                etf_ticker = GICS_SECTOR_MAP.get(live_sector, None)
+                if etf_ticker:
+                    print(f"Dynamic Sector Map: {ticker} -> {live_sector} -> {etf_ticker}")
         except:
             pass
+            
+        # [Strategy B] Static (CSV Fallback)
+        if not etf_ticker:
+            try:
+                universe = load_universe()
+                if ticker in universe['Ticker'].values:
+                    sec_name = universe.loc[universe['Ticker'] == ticker, 'Sector'].iloc[0]
+                    etf_ticker = SECTOR_BENCHMARKS.get(sec_name, 'XLK') # Default
+            except:
+                pass
+        
+        # [Execution] Fetch ETF
+        if etf_ticker:
+            etf_series = fetch_yahoo_etf(etf_ticker)
+            if etf_series is not None:
+                etf_ret = etf_series.pct_change().dropna()
+                etf_ret.name = 'Sector'
+                
+                # Join with main DF
+                # Use inner join to align dates
+                df = df.join(etf_ret, how='inner')
             
     # 2. Style Factors (Fama-French)
     try:
@@ -529,135 +587,102 @@ def calculate_idio_score(df, ticker_symbol):
     non_earnings_residuals = df.loc[~df.index.isin(valid_dates), 'Idio_Return']
 
     # Calculate Stats
-    # A. Earnings Days Stats
-    if not earnings_residuals.empty:
-        e_mean = earnings_residuals.abs().mean() # Magnitude
-        e_vol = earnings_residuals.std()
-        e_cnt = len(earnings_residuals)
-    else:
-        e_mean, e_vol, e_cnt = 0.0, 0.0, 0
-
-    # B. Non-Earnings Days Stats
-    if not non_earnings_residuals.empty:
-        ne_mean = non_earnings_residuals.abs().mean()
-        ne_vol = non_earnings_residuals.std()
-        ne_cnt = len(non_earnings_residuals)
-    else:
-        ne_mean, ne_vol, ne_cnt = 0.0, 0.0, 0
+    # 3. GS Delta Score Calculation
+    # Hypothesis: Earnings Days add "Efficiency" (Large Move vs Volatility cost).
+    # Score = Efficiency(Incl) - Efficiency(Excl)
+    # Efficiency = Annualized Mean(|Res|) / Annualized Std(Res)
     
-    # --- [New Logic: Max Peak per Event] ---
-    # Instead of averaging all days (dilution), we want "Average Peak Impact".
-    # Iterate through valid_real_dates to find max abs return for each event.
-    event_peaks = []
-    event_dirs = []
+    # A. Inclusive (Full Series)
+    # We use valid_real_dates to mask EXCLUSIVE, but Inclusive is just everything.
+    # Note: Annualization sqrt(252).
     
-    if len(valid_real_dates) > 0:
-        # Use Real Dates if available
-        # Need to map dates to indices again or strict lookups
-        # To avoid re-mapping complexity, we can use the window lookup logic again or simplified approach
-        # Since we just need an aggregate, let's fast-loop.
-        for d in valid_real_dates:
-             # Window [T, T+1]
-             # Handle TZ naive/aware matching by using string slicing or normalize
-             # Assuming df.index is normalized from earlier logic.
-             # Actually df.index might be DatetimeIndex.
-             
-             # Robust Window Lookup
-             try:
-                 loc = df.index.get_loc(d)
-                 # Handle slice if Loc returns slice/array (duplicate index), take first
-                 if isinstance(loc, slice): loc = loc.start
-                 if isinstance(loc, np.ndarray): loc = loc[0]
-                 
-                 start = loc
-                 end = min(len(df), loc + 2) # [T, T+1] (slice is exclusive at end)
-                 
-                 window_rets = df['Idio_Return'].iloc[start:end].abs()
-                 
-                 if not window_rets.empty:
-                     # Top-2 Average Logic (User Req 1)
-                     top_2 = window_rets.nlargest(2)
-                     event_score = top_2.mean()
-                     event_peaks.append(event_score)
-                     
-                     # Directional Score (User Req 4)
-                     # Sum of residuals in window
-                     win_res_signed = df['Idio_Return'].iloc[start:end]
-                     event_dirs.append(win_res_signed.sum())
-                     
-             except:
-                 pass
-    else:
-        # Fallback
-        if not earnings_moves.empty:
-             event_peaks = earnings_moves['Idio_Return'].abs().tolist()
-             event_dirs = earnings_moves['Idio_Return'].tolist()
-
-    if event_peaks:
-        # Aggregation: Median (User Req 5 - Robustness)
-        e_stat = np.median(event_peaks)
-        e_cnt = len(event_peaks)
+    if not df['Idio_Return'].empty:
+        # Mean Absolute 
+        mu_incl = df['Idio_Return'].abs().mean() * 252
+        # Volatility (Standard Deviation of Signed Residuals)
+        sigma_incl = df['Idio_Return'].std() * (252 ** 0.5)
         
-        # Direction Aggregation: Median of Sums
-        if event_dirs:
-            dir_score = np.median(event_dirs)
-        else:
-            dir_score = 0.0
+        score_incl = mu_incl / sigma_incl if sigma_incl > 0 else 0.0
     else:
-        e_stat, e_cnt, dir_score = 0.0, 0, 0.0
+        score_incl, mu_incl, sigma_incl = 0.0, 0.0, 0.0
 
-    # Recalculate Normal Volatility (strictly excluding ALL windows)
-    # merged_indices = union of all [T-2, T+2]
-    # We already have `expanded_indices` set if we used real dates.
-    # If fallback, we used top_volatile.
+    # B. Exclusive (Remove T-2 ~ T+2)
+    # Construct Mask
+    # We need to mask T-2 to T+2 for ALL Earnings Dates found.
+    # We use 'real_dates' (raw from API) and map to nearest trading day.
     
-    # If we have real dates logic, use `expanded_indices` to exclude.
-    # But `expanded_indices` is local variable inside try block. 
-    # Let's reconstruct it or use what we have.
-    # Actually `valid_dates` is just the list of center dates.
+    mask_event = pd.Series(False, index=df.index)
     
-    # To be precise, let's just use non_earnings_residuals BUT ensuring it excludes the user-defined window correctly.
-    # earlier logic: `earnings_residuals` was loc(valid_dates).
-    # IF valid_dates was just T, then we only excluded T.
-    # We need to exclude [T-2, T+2].
-    
-    # Re-filter Normal Vals
-    if len(valid_dates) > 0:
-        # Collect all "Event" indices
-        event_indices_set = set()
-        for d in valid_dates:
-             try:
-                 loc = df.index.get_loc(d)
-                 if isinstance(loc, slice): loc = loc.start
-                 if isinstance(loc, np.ndarray): loc = loc[0]
+    if 'real_dates' in locals() and len(real_dates) > 0:
+        # Use get_indexer for bulk nearest lookup
+        # Convert real_dates to normalized timestamps
+        target_dates = [pd.Timestamp(d).normalize().tz_localize(None) for d in real_dates]
+        
+        # Ensure df index is tz-naive for comparison
+        dt_index = df.index.normalize()
+        if dt_index.tz is not None: dt_index = dt_index.tz_localize(None)
+        
+        # Find nearest trading day indices
+        # limit is not supported in get_indexer directly in older pandas, but let's check distances manually
+        idxs = dt_index.get_indexer(target_dates, method='nearest')
+        
+        for i, loc in enumerate(idxs):
+            if loc == -1: continue
+            
+            # Check date distance (sanity check, e.g. < 7 days)
+            matched_date = dt_index[loc]
+            target_date = target_dates[i]
+            
+            if abs((matched_date - target_date).days) < 7:
+                 # Mark Window [T-2, T+2]
+                 # 'loc' is the integer index of the nearest trading day
                  start = max(0, loc - 2)
-                 end = min(len(df), loc + 3) # Slice exclusive
-                 for i in range(start, end):
-                     event_indices_set.add(df.index[i])
-             except: pass
+                 end = min(len(df), loc + 3) # Exclusive end
+                 mask_event.iloc[start:end] = True
+                 
+    # Also valid_real_dates legacy list (if needed for counting)
+    # We can approximate 'Event_Count' as number of successful matches
+    # But let's keep the mask logic robust.
              
-        normal_df = df.loc[~df.index.isin(event_indices_set)]
-        if not normal_df.empty:
-            ne_vol = normal_df['Idio_Return'].std()
-        else:
-             ne_vol = df['Idio_Return'].std() # Fallback if everything is event (unlikely)
-             
-    # Final Score
-    if ne_vol > 0:
-        score = e_stat / ne_vol
+    # Filter residuals using mask
+    res_excl = df['Idio_Return'][~mask_event]
+    
+    if not res_excl.empty:
+        mu_excl = res_excl.abs().mean() * 252
+        sigma_excl = res_excl.std() * (252 ** 0.5)
+        score_excl = mu_excl / sigma_excl if sigma_excl > 0 else 0.0
     else:
-        score = 0.0
+        # If everything is excluded (unlikely), fallback
+        score_excl, mu_excl, sigma_excl = score_incl, mu_incl, sigma_incl
         
-    # Return expanded dictionary including Direction
+    # C. Final Delta Score
+    delta_score = score_incl - score_excl
+    
+    # Pack Result
+    score = delta_score
+    
+    # Re-calculate event count based on mask (approx) or inputs
+    # Let's use the input length for count
+    raw_cnt = len(real_dates) if 'real_dates' in locals() else 0
+    # match_cnt should be derived from successful masking
+    # We can track it in the masking loop.
+    # But for now, let's just surface raw_cnt to see if API worked.
+    
     comp_stats = {
-        'Earnings_Stat': e_stat, # Median of Top2Avg
-        'Earnings_Count': e_cnt,
-        'Normal_Vol': ne_vol,
-        'Direction_Score': dir_score,
-        'Label': 'Bullish' if dir_score > 0 else 'Bearish'
+        'GS_Score_Incl': score_incl,
+        'GS_Score_Excl': score_excl,
+        'Delta_Score': delta_score,
+        'Mean_Incl': mu_incl,
+        'Vol_Incl': sigma_incl,
+        'Mean_Excl': mu_excl,
+        'Vol_Excl': sigma_excl,
+        'Event_Count': raw_cnt, # Use Raw Count for now to check API
+        'Series_Excl': res_excl # [NEW] Return logic for chart
     }
 
-    return score, df, betas, e_stat, ne_vol, comp_stats
+    # Maintain legacy return signature for app compatibility
+    # score, df, betas, daily_ret(Legacy), daily_vol(Legacy), comp_stats
+    return score, df, betas, mu_incl, sigma_incl, comp_stats
 
 def process_uploaded_file(uploaded_file):
     """

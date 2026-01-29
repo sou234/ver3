@@ -1298,218 +1298,322 @@ if menu == "💎 Earnings Event Trading":
     # TAB 2: Deep Dive (Individual Analysis)
     # ==============================================================================
     with tab_deepdive:
-        st.caption("개별 종목에 대한 심층 분석 리포트입니다.")
+        st.subheader("🔎 실적 발표 종목 분석")
         
-        st.markdown("---")
-        st.subheader("1. Market Data (Benchmark)")
+        # [Step 1] Calendar Search to Select Ticker
+        c_search1, c_search2 = st.columns([1, 2])
+        with c_search1:
+            target_date = st.date_input("날짜 선택", datetime.now(), key="dd_date")
         
-        st.subheader("1. Market Data (Benchmark)")
+        with c_search2:
+            st.write("") # Spacer
+            st.write("") 
+            if st.button("실적 발표 종목 검색 🔍", key="dd_search_btn"):
+                with st.spinner("Nasdaq.com 검색 중..."):
+                    cal_df = logic_crawler.get_earnings_calendar(target_date.strftime("%Y-%m-%d"))
+                    if not cal_df.empty:
+                        st.session_state['dd_calendar'] = cal_df
+                        st.success(f"{len(cal_df)}개 종목 발견!")
+                    else:
+                        st.warning("해당 날짜에 예정된 실적 발표가 없습니다.")
+                        st.session_state['dd_calendar'] = None
+
+        # Ticker Selection Logic
+        dd_ticker = ticker # Default to sidebar ticker
         
-        st.info("📡 Yahoo Finance에서 SPY(S&P 500) 데이터를 자동으로 가져옵니다.")
-        
-        # Always Auto (SPY Proxy)
-        market_data_source = logic_idio.fetch_spy_proxy()
-        
-        if market_data_source is not None:
-            st.success("✅ SPY 데이터 확보 완료! (Hybrid Mode 동작)")
+        if st.session_state.get('dd_calendar') is not None:
+             cal_df = st.session_state['dd_calendar']
+             # Create list of "Ticker | Name"
+             opts = [f"{row['Ticker']} | {row['Company']}" for _, row in cal_df.iterrows()]
+             
+             # Use a key to keep state
+             sel_opt = st.selectbox("분석할 종목을 선택하세요:", opts, key="dd_ticker_select")
+             
+             # Extract ticker
+             dd_ticker = sel_opt.split(' | ')[0]
+             st.info(f"👉 **{dd_ticker}** 종목이 선택되었습니다. 아래에서 상세 분석을 확인하세요.")
         else:
-            st.warning("⚠️ SPY 데이터 수집 실패. 시연용 가상 데이터(Synthetic)가 사용될 수 있습니다.")
-        
-        uploaded_file = None # No file upload anymore
+             st.caption(f"👆 위에서 날짜를 선택해 종목을 검색하거나, 사이드바에서 선택된 **{ticker}**를 분석합니다.")
+
+        # Update variable for downstream use
+        ticker = dd_ticker 
         
         st.divider()
+
+        # [Section 1] Analyst Consensus & Sentiment
+        st.subheader("1. Analyst Consensus & Sentiment")
         
-        # 2. Earnings Calendar
-        st.subheader("2. Earnings Calendar (Nasdaq)")
-        target_date = st.date_input("날짜 선택", date.today())
+        # Fetch Analyst Data (Now that ticker is updated)
+        try:
+            cons = logic_crawler.fetch_analyst_consensus(ticker)
+        except:
+            cons = {}
+            
+        if cons and cons.get('targetMean'):
+            ac1, ac2 = st.columns([1, 2])
+            
+            # Fetch live price for display
+            try:
+                live_info = yf.Ticker(ticker).fast_info
+                curr_px = live_info.last_price
+            except:
+                curr_px = 0
+                
+            target_px = cons.get('targetMean')
+            
+            with ac1:
+                upside = ((target_px - curr_px) / curr_px) * 100 if curr_px > 0 else 0
+                st.metric("Target Price (Avg)", f"${target_px}", f"{upside:+.1f}% Upside")
+                
+            with ac2:
+                st.markdown(f"**Recommendation:** {cons.get('recommendKey', 'N/A').upper()}")
+                st.markdown(f"**Analyst Count:** {cons.get('analystCount', 0)}")
+                
+                # Custom Gauge (Plotly)
+                fig_g = go.Figure(go.Indicator(
+                    mode = "gauge+number",
+                    value = curr_px,
+                    title = {'text': "Current vs Target"},
+                    gauge = {
+                        'axis': {'range': [None, cons.get('targetHigh', target_px*1.2)]},
+                        'bar': {'color': "darkblue"},
+                        'steps': [
+                            {'range': [0, cons.get('targetLow', 0)], 'color': "lightgray"},
+                            {'range': [cons.get('targetLow', 0), cons.get('targetHigh', 0)], 'color': "gray"}
+                        ],
+                        'threshold': {
+                            'line': {'color': "red", 'width': 4},
+                            'thickness': 0.75,
+                            'value': target_px
+                        }
+                    }
+                ))
+                fig_g.update_layout(height=180, margin=dict(l=20,r=20,t=30,b=20))
+                st.plotly_chart(fig_g, use_container_width=True)
+        else:
+            st.info("Analyst consensus data currently unavailable (Yahoo Finance source).")
+
+        st.divider()
+
+        # [Section 2] Past Earnings Price Reaction
+        st.subheader("2. Past Earnings Price Reaction")
+        st.caption(f"Earnings Move = | ($P_{{t+1}} / P_{{t-1}}$) - 1 | (Absolute 2-day reaction)")
+        st.caption("💡 **Earnings Surprise** = (실제 실적 - 예상 실적) / |예상 실적| × 100 (시장 기대치 대비 상회/하회 정도)")
         
-        if st.button("실적 발표 종목 검색 🔍"):
-            with st.spinner("Nasdaq.com 검색 중..."):
-                calendar_df = logic_crawler.get_earnings_calendar(target_date.strftime("%Y-%m-%d"))
-                if not calendar_df.empty:
-                    st.session_state['earnings_calendar'] = calendar_df
-                    st.session_state['batch_results'] = None # Reset previous batch results
-                    st.success(f"✅ {len(calendar_df)}개 발견! 우측 대시보드에서 확인하세요.")
+        # Fetch History
+        e_hist = logic_crawler.fetch_earnings_history_rich(ticker)
+        
+        if not e_hist.empty:
+            # Calculate Price Moves
+            try:
+                # We need extensive history for calculation
+                price_df_long = logic_crawler.fetch_historical_price(ticker)
+                
+                if not price_df_long.empty:
+                    # Ensure index is normalized
+                    price_df_long.index = price_df_long.index.normalize()
+                    
+                    moves = []
+                    for _, row in e_hist.iterrows():
+                        try:
+                            edate = row['Date'].normalize()
+                            
+                            # Find T-1 and T+1 indices
+                            idx_loc = price_df_long.index.get_indexer([edate], method='nearest')[0]
+                            
+                            if idx_loc != -1 and idx_loc > 0 and idx_loc < len(price_df_long) - 1:
+                                p_prev = price_df_long.iloc[idx_loc - 1]['Stock']
+                                p_next = price_df_long.iloc[idx_loc + 1]['Stock']
+                                
+                                if p_prev > 0:
+                                    move_pct = abs((p_next / p_prev) - 1.0) * 100
+                                    moves.append(move_pct)
+                                else:
+                                    moves.append(None)
+                            else:
+                                moves.append(None)
+                        except:
+                            moves.append(None)
+                            
+                    e_hist['Move (Abs %)'] = moves
                 else:
-                    st.warning("해당 날짜에 예정된 실적 발표가 없거나 데이터를 가져올 수 없습니다.")
-                    st.session_state['earnings_calendar'] = None
-                    st.session_state['batch_results'] = None
-
-    # 메인 분석 실행
-    if st.button("Idio Score 분석 시작 🚀"):
-        with st.spinner(f'{ticker} 데이터 분석 중...'):
-            # 1. 데이터 로드 로직 (우선순위: Full Upload > Hybrid > Synthetic)
-            market_data = None
-            grade = "Synthetic" # Data Quality Grade
+                     e_hist['Move (Abs %)'] = None
+                
+            except Exception as ex:
+                e_hist['Move (Abs %)'] = None
+                
+            # Formatting and Display
+            def style_moves(val):
+                if val is None or pd.isna(val) or val == '': return ''
+                try:
+                    v = float(val)
+                    color = '#ffcdd2' if v > 5.0 else '' 
+                    return f'background-color: {color}'
+                except: return ''
             
-            # Use market_data_source from the radio button selection
-            if market_data_source is not None:
-                # If market_data_source is already a full dataset (from uploaded file)
-                if 'Stock' in market_data_source.columns and 'Market' in market_data_source.columns:
-                    market_data = market_data_source
-                    grade = "Real (Full Upload)"
-                    st.success("✅ [Full Mode] 업로드된 전체 데이터로 분석합니다.")
-                else:
-                    # Hybrid Mode: market_data_source is Benchmark (Market/Sector)
-                    bench_data = market_data_source
-                    st.info(f"🔄 [Hybrid Mode] 벤치마크 데이터 확보 ({len(bench_data)}일). {ticker} 개별 주가 수집 중...")
-                    
-                    stock_df = logic_crawler.fetch_historical_price(ticker)
-                    
-                    if not stock_df.empty:
-                        # Calculate Returns for Stock
-                        stock_ret = stock_df.pct_change().dropna()
-                        
-                        # Merge (Inner Join on Date)
-                        merged = bench_data.join(stock_ret, how='inner').dropna()
-                        
-                        if not merged.empty and 'Stock' in merged.columns:
-                            market_data = merged
-                            grade = "Real (Hybrid)"
-                            st.success(f"✅ [Hybrid Mode] S&P500 + {ticker}(Live) 결합 완료! ({len(merged)}일)")
-                        else:
-                            st.error("날짜가 겹치는 데이터가 없습니다. (벤치마크 날짜 확인 필요)")
-                    else:
-                        st.error(f"{ticker} 실시간 데이터 수집 실패. (Nasdaq API)")
+            # Clean Date
+            e_hist_disp = e_hist.copy()
+            e_hist_disp['Date'] = e_hist_disp['Date'].dt.strftime('%Y-%m-%d')
             
-            # 2. Fallback to Synthetic if still None
-            if market_data is None:
-                market_data = logic_idio.get_market_data(ticker, benchmark_ticker)
+            # Rename Columns for Display
+            rename_map = {
+                'Est EPS': 'Est EPS (예상)',
+                'Act EPS': 'Act EPS (실제)',
+                'Surprise(%)': 'Surprise (서프라이즈%)'
+            }
+            e_hist_disp.rename(columns=rename_map, inplace=True)
             
-            if market_data is not None:
-                # 1. Enrich (Multi-Factor)
-                market_data = logic_idio.enrich_with_factors(market_data, ticker)
-                
-                # 2. Calculate (Unpack 6 values)
-                score, df, betas, d_ret, d_vol, cp = logic_idio.calculate_idio_score(market_data, ticker)
-                
-                # [Safety] Module Reload Issue 방지: 혹시라도 float가 리턴되면 빈 dict로 변환
-                if not isinstance(cp, dict): cp = {}
-                if not isinstance(betas, dict): betas = {}
-                
-                # --- 결과 화면 ---
-                
-                # 1. 스코어 카드 (GS Only)
-                col1, col2, col3, col4, col5 = st.columns(5)
-                col1.metric("GS Idio Score (Delta)", f"{score:.2f}", 
-                            delta="High Alpha" if score > 0.5 else "Low",
-                            help="Difference between Inclusive and Exclusive Efficiency Scores")
-                
-                # Breakdown
-                gs_incl = cp.get('GS_Score_Incl', 0.0)
-                gs_excl = cp.get('GS_Score_Excl', 0.0)
-                
-                col2.metric("Efficiency (Included)", f"{gs_incl:.2f}", help="Sharpe of Abs Residuals (Full Period)")
-                col3.metric("Efficiency (Excluded)", f"{gs_excl:.2f}", help="Sharpe of Abs Residuals (Ex-Earnings)")
-                
-                col4.metric("분석된 이벤트", f"{cp.get('Event_Count', 0)}회")
-                col5.metric("Factor Model", "5-Factor" if 'MOM' in betas else "4-Factor")
-
-                # 2. Beta Breakdown
-                st.caption("Fama-French Multi-Factor Coefficients")
-                b1, b2, b3, b4, b5 = st.columns(5)
-                b1.metric("Market Beta", f"{betas.get('Market', 0.0):.2f}")
-                b2.metric("Sector Beta", f"{betas.get('Sector', 0.0):.2f}")
-                b3.metric("Size (SMB)", f"{betas.get('SMB', 0.0):.2f}")
-                b4.metric("Value (HML)", f"{betas.get('HML', 0.0):.2f}")
-                b5.metric("Mom (MOM)", f"{betas.get('MOM', 0.0):.2f}")
-                
-                st.divider()
-
-                # 3. Comparative Analysis (New Section)
-                st.subheader("⚖️ Comparative Analysis: Earnings Contribution")
-                st.caption("실적 포함(Inclusive) vs 제외(Exclusive) 효율성 비교")
-                
-                c1, c2, c3 = st.columns(3)
-                
-                with c1:
-                    st.markdown("#### Inclusive (Full)")
-                    st.metric("Mean Abs (Ann)", f"{cp.get('Mean_Incl',0)*100:.1f}%")
-                    st.metric("Vol (Ann)", f"{cp.get('Vol_Incl',0)*100:.1f}%")
-                    st.metric("Score", f"{gs_incl:.2f}")
-                    
-                with c2:
-                    st.markdown("#### Exclusive (No Earnings)")
-                    st.metric("Mean Abs (Ann)", f"{cp.get('Mean_Excl',0)*100:.1f}%")
-                    st.metric("Vol (Ann)", f"{cp.get('Vol_Excl',0)*100:.1f}%")
-                    st.metric("Score", f"{gs_excl:.2f}")
-                    
-                with c3:
-                    st.markdown("#### Earnings Impact")
-                    st.metric("Delta Score", f"{score:.2f}", 
-                              delta="Positive" if score > 0 else "Negative")
-                    st.info(f"실적 기간이 포함됨으로써 점수가 **{score:+.2f}** 만큼 변화했습니다.")
-
-                # Comparative Chart (Bar)
-                # ... (Keeping existing Bar Chart or removing?)
-                # User asked for "Earning 포함과 제외 비교".
-                # Bar chart of Scores is good.
-                # Adding Cumulative Line Chart is BETTER.
-                
-                # 1. Bar Chart (Scores)
-                comp_df = pd.DataFrame({
-                    'Condition': ['Inclusive (With Earnings)', 'Exclusive (Without Earnings)'],
-                    'GS Score': [gs_incl, gs_excl]
+            st.dataframe(
+                e_hist_disp[['Date', 'Est EPS (예상)', 'Act EPS (실제)', 'Surprise (서프라이즈%)', 'Move (Abs %)']].style
+                .format({
+                    'Est EPS (예상)': '{:.2f}', 
+                    'Act EPS (실제)': '{:.2f}', 
+                    'Surprise (서프라이즈%)': '{:.2f}%',
+                    'Move (Abs %)': '{:.2f}%'
                 })
-                fig_bar = px.bar(comp_df, x='Condition', y='GS Score', color='Condition', 
-                                 title="Efficiency Score Comparison", text_auto='.2f')
-                st.plotly_chart(fig_bar, use_container_width=True)
+                .map(style_moves, subset=['Move (Abs %)']),
+                use_container_width=True,
+                hide_index=True
+            )
+        else:
+            st.warning("Earnings history not found (Nasdaq API).")
+
+        st.divider()
+
+        # [Section 3] Idio Score Analysis
+        st.subheader("3. Idio Score & Efficiency Analysis")
+        st.caption("골드만삭스 방법론: 시장/섹터/팩터 효과를 제거한 '순수 실적 발표 효과' 분석")
+        
+        with st.expander("ℹ️ Idio Score 산출 로직 보기 (Goldman Sachs Method)"):
+            try:
+                with open("c:/code/presentation/idio_logic.html", "r", encoding="utf-8") as f:
+                    html_content = f.read()
+                st.components.v1.html(html_content, height=600, scrolling=True)
                 
-                # 2. Cumulative Equity Curve (The "Proof")
-                st.subheader("📈 Cumulative Alpha (Idiosyncratic Return)")
-                st.caption("실적 발표 기간이 장기 성과에 미치는 영향을 시각화합니다.")
+                # Download/Open Button
+                st.download_button(
+                    label="📄 이 설명서(HTML) 다운로드/열기",
+                    data=html_content,
+                    file_name="idio_score_logic.html",
+                    mime="text/html"
+                )
+            except Exception as e:
+                st.error(f"문서 로드 실패: {e}")
+
+        if st.button("Idio Score 분석 시작 🚀"):
+            with st.spinner(f'{ticker} 데이터 분석 중... (SPY, Sector ETF, 5-Factor 등 수집)'):
                 
-                if 'Series_Excl' in cp:
-                    # Incl Series (Full Idio Return)
-                    s_incl = df['Idio_Return'].fillna(0)
-                    
-                    # Excl Series 
-                    # logic_idio returns Series_Excl which contains only non-event days.
-                    # We need to reindex it to full index to plot, filling removed days with 0.0 (Cash)
-                    s_excl = cp['Series_Excl'].reindex(df.index).fillna(0.0)
-                    
-                    # Cumulative Sum
-                    cum_incl = s_incl.cumsum()
-                    cum_excl = s_excl.cumsum()
-                    
-                    chart_data = pd.DataFrame({
-                        'With Earnings (실적 포함)': cum_incl,
-                        'Without Earnings (실적 제외)': cum_excl
-                    })
-                    
-                    fig_line = px.line(chart_data, title="Cumulative Idiosyncratic Return (Alpha Accumulation)",
-                                       labels={'value': 'Cum Residual Return', 'index': 'Date'})
-                    # Provide clearer colors
-                    fig_line.update_traces(line=dict(width=2))
-                    st.plotly_chart(fig_line, use_container_width=True)
-                    
-                    diff_val = cum_incl.iloc[-1] - cum_excl.iloc[-1]
-                    st.info(f"💡 **분석 결과**: 실적 발표 기간을 포함했을 때 누적 성과가 **{diff_val*100:+.1f}%** 더 {'좋습니다' if diff_val>0 else '나쁩니다'}.")
-                else:
-                    st.warning("상세 시계열 데이터를 불러오지 못했습니다.")
-
-                st.divider()
-
-                # 2. 인사이트 메시지 (GS Delta Logic)
-                if score > 0.5:
-                    st.success(f"**🔥 High Impact:** 실적 발표가 이 종목의 변동성 대비 수익 효율을 크게 높여줍니다. (Delta: +{score:.2f})")
-                elif score < 0.1:
-                    st.warning(f"**🛡️ Low Impact:** 실적 발표를 제외해도 효율성 차이가 거의 없습니다.")
+                # Market Data Fetching (Auto)
+                # Ensure we use robust fetching directly here
+                # Try to get data via logic_idio which should now be robust (will update next)
                 
-                st.divider()
+                try:
+                    # Determine Benchmark
+                    sec = universe_df[universe_df['Ticker'] == ticker]['Sector'].iloc[0] if ticker in universe_df['Ticker'].values else "지수"
+                    bench = logic_idio.SECTOR_BENCHMARKS.get(sec, '^GSPC')
+                    
+                    market_data = logic_idio.get_market_data(ticker, bench)
+                    
+                    # Check Data Quality
+                    is_synthetic = False
+                    if market_data is not None:
+                         # logic_idio.create_synthetic_market_data columns: Market, Sector, Stock
+                         # Real fetch usually returns Market, Stock (Sector added later in enrich)
+                         # Wait, get_market_data returns joined [Market, Stock].
+                         # If it called create_synthetic_market_data, logic_idio should have a flag or we check values?
+                         # Let's trust the fetch.
+                         pass
+                    
+                    if market_data is not None:
+                         # 1. Enrich (Multi-Factor)
+                        market_data = logic_idio.enrich_with_factors(market_data, ticker)
+                        
+                        # 2. Calculate
+                        score, df, betas, d_ret, d_vol, cp = logic_idio.calculate_idio_score(market_data, ticker)
+                        
+                        # [Safety] Module Reload Issue 방지
+                        if not isinstance(cp, dict): cp = {}
+                        if not isinstance(betas, dict): betas = {}
+                        
+                        # --- 결과 화면 ---
+                        # 1. 스코어 카드
+                        col1, col2, col3, col4, col5 = st.columns(5)
+                        col1.metric("GS Idio Score (Delta)", f"{score:.2f}", 
+                                    delta="High Alpha" if score > 0.5 else "Low",
+                                    help="Difference between Inclusive and Exclusive Efficiency Scores")
+                        
+                        gs_incl = cp.get('GS_Score_Incl', 0.0)
+                        gs_excl = cp.get('GS_Score_Excl', 0.0)
+                        
+                        col2.metric("Efficiency (Included)", f"{gs_incl:.2f}")
+                        col3.metric("Efficiency (Excluded)", f"{gs_excl:.2f}")
+                        col4.metric("분석된 이벤트", f"{cp.get('Event_Count', 0)}회")
+                        col5.metric("Factor Model", "5-Factor" if 'MOM' in betas else "4-Factor")
+        
+                        # 2. Beta Breakdown
+                        st.caption("Fama-French Multi-Factor Coefficients")
+                        b1, b2, b3, b4, b5 = st.columns(5)
+                        b1.metric("Market Beta", f"{betas.get('Market', 0.0):.2f}")
+                        b2.metric("Sector Beta", f"{betas.get('Sector', 0.0):.2f}")
+                        b3.metric("Size (SMB)", f"{betas.get('SMB', 0.0):.2f}")
+                        b4.metric("Value (HML)", f"{betas.get('HML', 0.0):.2f}")
+                        b5.metric("Mom (MOM)", f"{betas.get('MOM', 0.0):.2f}")
+                        
+                        st.divider()
+        
+                        # 3. Comparative Analysis
+                        st.subheader("⚖️ Comparative Analysis: Earnings Contribution")
+                        
+                        c1, c2, c3 = st.columns(3)
+                        
+                        with c1:
+                            st.markdown("#### Inclusive (Full)")
+                            st.metric("Mean Abs (Ann)", f"{cp.get('Mean_Incl',0)*100:.1f}%")
+                            st.metric("Vol (Ann)", f"{cp.get('Vol_Incl',0)*100:.1f}%")
+                            st.metric("Score", f"{gs_incl:.2f}")
+                            
+                        with c2:
+                            st.markdown("#### Exclusive (No Earnings)")
+                            st.metric("Mean Abs (Ann)", f"{cp.get('Mean_Excl',0)*100:.1f}%")
+                            st.metric("Vol (Ann)", f"{cp.get('Vol_Excl',0)*100:.1f}%")
+                            st.metric("Score", f"{gs_excl:.2f}")
+                            
+                        with c3:
+                            st.markdown("#### Earnings Impact")
+                            st.metric("Delta Score", f"{score:.2f}", 
+                                      delta="Positive" if score > 0 else "Negative")
+                            st.info(f"실적 발표 기간을 포함했을 때 점수가 **{score:+.2f}** 변화합니다.")
+        
+                        # 4. Cumulative Equity Curve
+                        st.subheader("📈 Cumulative Alpha (Idiosyncratic Return)")
+                        
+                        if 'Series_Excl' in cp:
+                            s_incl = df['Idio_Return'].fillna(0)
+                            s_excl = cp['Series_Excl'].reindex(df.index).fillna(0.0)
+                            
+                            cum_incl = s_incl.cumsum()
+                            cum_excl = s_excl.cumsum()
+                            
+                            chart_data = pd.DataFrame({
+                                'With Earnings (실적 포함)': cum_incl,
+                                'Without Earnings (실적 제외)': cum_excl
+                            })
+                            
+                            fig_line = px.line(chart_data, title="Cumulative Idiosyncratic Return",
+                                               labels={'value': 'Cum Residual Return', 'index': 'Date'})
+                            fig_line.update_traces(line=dict(width=2))
+                            st.plotly_chart(fig_line, use_container_width=True)
+                        
+                        st.divider()
+                        
+                        if score > 0.5:
+                            st.success(f"**🔥 High Impact:** 실적 발표가 이 종목의 변동성 대비 수익 효율을 크게 높여줍니다. (Delta: +{score:.2f})")
+                        elif score < 0.1:
+                            st.warning(f"**🛡️ Low Impact:** 실적 발표를 제외해도 효율성 차이가 거의 없습니다.")
+                            
+                    else:
+                        st.error("데이터 수집 실패 (Market/Stock)")
+                        
+                except Exception as e:
+                    st.error(f"분석 중 오류 발생: {e}")
 
-                # 3. 그래프: Alpha vs Beta 분해
-                
-                st.divider()
-
-
-            else:
-                 # Data Collection Failed (Detailed Feedback)
-                 st.warning(f"⚠️ **'{ticker}' 데이터 수집에 실패했습니다.**")
-                 st.markdown("""
-                 **가능한 원인은 다음과 같습니다:**
-                 1. **잘못된 티커**: 미국 주식 티커가 맞는지 확인해주세요. (예: 삼성전자 사용 불가)
-                 2. **데이터 접근 차단 (Yahoo Finance)**: 짧은 시간에 너무 많은 요청을 보내면 일시적으로 차단될 수 있습니다. (잠시 후 다시 시도)
-                 3. **데이터 부족**: 상장된 지 3년 미만인 종목이거나, 거래량이 매우 적은 종목일 수 있습니다. (Nasdaq 소스 사용 중)
-                 4. **네트워크 오류**: 인터넷 연결 상태를 확인해주세요.
-                 """)

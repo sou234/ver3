@@ -1,0 +1,217 @@
+<!DOCTYPE html>
+<html lang="ko">
+
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Idio Score Calculation Methodology</title>
+    <!-- MathJax for rendering formulas -->
+    <script src="https://polyfill.io/v3/polyfill.min.js?features=es6"></script>
+    <script id="MathJax-script" async src="https://cdn.jsdelivr.net/npm/mathjax@3/es5/tex-mml-chtml.js"></script>
+    <style>
+        body {
+            font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;
+            line-height: 1.6;
+            color: #333;
+            max_width: 900px;
+            margin: 0 auto;
+            padding: 40px;
+            background-color: #f9f9f9;
+        }
+
+        h1 {
+            color: #2c3e50;
+            border-bottom: 3px solid #3498db;
+            padding-bottom: 10px;
+        }
+
+        h2 {
+            color: #2c3e50;
+            margin-top: 40px;
+            border-left: 5px solid #3498db;
+            padding-left: 15px;
+        }
+
+        h3 {
+            color: #34495e;
+            margin-top: 25px;
+        }
+
+        .container {
+            background-color: white;
+            padding: 40px;
+            border-radius: 8px;
+            box-shadow: 0 4px 15px rgba(0, 0, 0, 0.1);
+        }
+
+        .formula-box {
+            background-color: #f0f7fb;
+            padding: 20px;
+            border-radius: 5px;
+            margin: 20px 0;
+            border: 1px solid #d1e8f7;
+            text-align: center;
+            font-size: 1.1em;
+        }
+
+        .concept-box {
+            background-color: #fff8e1;
+            padding: 15px;
+            border-left: 4px solid #f1c40f;
+            margin: 20px 0;
+        }
+
+        table {
+            width: 100%;
+            border-collapse: collapse;
+            margin: 20px 0;
+        }
+
+        th,
+        td {
+            border: 1px solid #ddd;
+            padding: 12px;
+            text-align: left;
+        }
+
+        th {
+            background-color: #f2f2f2;
+            color: #333;
+        }
+
+        code {
+            background-color: #eee;
+            padding: 2px 5px;
+            border-radius: 3px;
+            font-family: 'Consolas', monospace;
+            color: #c7254e;
+        }
+
+        .step {
+            margin-bottom: 30px;
+        }
+
+        .highlight {
+            font-weight: bold;
+            color: #e74c3c;
+        }
+    </style>
+</head>
+
+<body>
+
+    <div class="container">
+        <h1>Earnings Idio Score 산출 로직 (Methodology)</h1>
+        <p>본 문서는 <strong>Earnings Idio Score</strong>가 어떻게 산출되는지, 수학적 모델과 데이터 매칭 프로세스를 상세히 설명합니다.</p>
+
+        <div class="concept-box">
+            <strong> 핵심 아이디어 (Core Idea)</strong><br>
+            "종목의 수익률에서 <u>시장(Market), 섹터(Sector), 스타일(Factor)의 영향력을 모두 제거</u>하고 남은,
+            오직 <strong>그 기업 고유의 움직임(Idiosyncratic Return)</strong>만을 발라내어, 실적 발표 기간에 이 고유 움직임이 얼마나 효율적으로 발생하는지 측정한다."
+        </div>
+
+        <!-- Step 1 -->
+        <div class="step">
+            <h2>Step 1. 데이터 수집 및 매칭 (Data Matching)</h2>
+            <p>가장 먼저 개별 종목과 비교 대상(Benchmark)들의 일별 수익률 데이터를 날짜(Date) 기준으로 Inner Join 합니다.</p>
+
+            <table>
+                <thead>
+                    <tr>
+                        <th>데이터 종류 (Variable)</th>
+                        <th>설명 (Description)</th>
+                        <th>소스 (Source)</th>
+                    </tr>
+                </thead>
+                <tbody>
+                    <tr>
+                        <td><strong>Target Stock ($R_i$)</strong></td>
+                        <td>분석 대상 종목의 일별 로그 수익률</td>
+                        <td>Nasdaq API / Yahoo Finance</td>
+                    </tr>
+                    <tr>
+                        <td><strong>Market ($R_{mkt}$)</strong></td>
+                        <td>시장 전체 수익률 (S&P 500 Proxy)</td>
+                        <td>SPY ETF</td>
+                    </tr>
+                    <tr>
+                        <td><strong>Sector ($R_{sec}$)</strong></td>
+                        <td>해당 종목이 속한 섹터의 ETF 수익률<br>(예: Apple → Technology → XLK)</td>
+                        <td>Yahoo Finance (GICS Matching)</td>
+                    </tr>
+                    <tr>
+                        <td><strong>Style Factors</strong></td>
+                        <td>
+                            <ul>
+                                <li><strong>SMB</strong>: 소형주 효과 (Size)</li>
+                                <li><strong>HML</strong>: 가치주 효과 (Value)</li>
+                                <li><strong>MOM</strong>: 모멘텀 효과 (Recent Trend)</li>
+                            </ul>
+                        </td>
+                        <td>Kenneth French Data Library</td>
+                    </tr>
+                </tbody>
+            </table>
+        </div>
+
+        <!-- Step 2 -->
+        <div class="step">
+            <h2>Step 2. 5-Factor Regression (Pure Alpha 추출)</h2>
+            <p>시장의 영향을 제거하기 위해 다중회귀분석(Multiple Regression)을 수행합니다. 여기서 구해진 <strong>잔차(Residual, $\epsilon$)</strong>가 바로
+                우리가 원하는 '순수 고유 수익률'입니다.</p>
+
+            <div class="formula-box">
+                $$ R_{i,t} = \alpha + \beta_{Mkt}R_{Mkt,t} + \beta_{Sec}R_{Sec,t} + \beta_{SMB}SMB_t + \beta_{HML}HML_t
+                + \beta_{MOM}MOM_t + \epsilon_{i,t} $$
+            </div>
+
+            <ul>
+                <li>$\beta$ (Beta): 각 요인이 종목 수익률에 미치는 민감도입니다. (예: 시장이 1% 오를 때 내 종목은 1.2% 오른다면 $\beta_{Mkt} = 1.2$)</li>
+                <li><strong>$\epsilon_{i,t}$ (Idiosyncratic Return)</strong>: 모델이 설명하지 못하는, 오직 이 종목만의 고유한 뉴스(실적 등)에 의한
+                    수익률입니다.</li>
+            </ul>
+        </div>
+
+        <!-- Step 3 -->
+        <div class="step">
+            <h2>Step 3. Efficiency Score 계산</h2>
+            <p>추출된 잔차($\epsilon$)를 이용하여, 실적 발표가 있을 때와 없을 때의 <strong>수익 효율성(Efficiency)</strong> 차이를 계산합니다.</p>
+
+            <h3>3-1. Efficiency 정의</h3>
+            <p>변동성(위험) 1단위당 얻을 수 있는 '순수 절대 수익'의 크기를 의미합니다. (Sharpe Ratio와 유사한 개념)</p>
+            <div class="formula-box">
+                $$ \text{Efficiency} = \frac{\text{Annualized Mean}(|\epsilon|)}{\text{Annualized Std}(\epsilon)} =
+                \frac{\frac{1}{N}\sum |\epsilon_t| \times 252}{\sigma_{\epsilon} \times \sqrt{252}} $$
+            </div>
+
+            <h3>3-2. Delta Score (최종 점수)</h3>
+            <p>전체 기간의 효율성에서, 실적 발표일($T-2 \sim T+2$)을 뺀 기간의 효율성을 차감합니다.</p>
+            <div class="formula-box">
+                $$ \text{Idio Score} = \text{Efficiency}_{\text{Inclusive (All Days)}} -
+                \text{Efficiency}_{\text{Exclusive (No Earnings)}} $$
+            </div>
+
+            <div class="concept-box">
+                <strong>해석 (Interpretation)</strong>
+                <ul>
+                    <li><strong>점수 > 0 (+)</strong>: 실적 발표 기간이 포함될 때 효율성이 더 좋아진다. <br>→ <span class="highlight">"실적 발표 때
+                            변동성을 감수하고 베팅할 가치가 있다."</span></li>
+                    <li><strong>점수 ≈ 0</strong>: 실적 발표가 별다른 초과 수익 기회를 주지 않는다.</li>
+                </ul>
+            </div>
+        </div>
+
+        <div class="step">
+            <h2>요약 (Conclusion)</h2>
+            <ol>
+                <li><strong>Data Prep:</strong> 내 종목, 시장, 섹터, 스타일 데이터를 날짜별로 정확히 매칭한다.</li>
+                <li><strong>Filtering:</strong> 5-Factor 회귀분석을 통해 '시장 빨'을 다 걷어내고 '진짜 실력(잔차)'만 남긴다.</li>
+                <li><strong>Scoring:</strong> '진짜 실력'이 평소보다 실적 시즌에 얼마나 더 돋보이는지(효율적인지) 점수화한다.</li>
+            </ol>
+        </div>
+
+    </div>
+
+</body>
+
+</html>
