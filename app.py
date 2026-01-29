@@ -1492,7 +1492,10 @@ if menu == "💎 Earnings Event Trading":
         
         with st.expander("ℹ️ Idio Score 산출 로직 보기 (Goldman Sachs Method)"):
             try:
-                with open("c:/code/presentation/idio_logic.html", "r", encoding="utf-8") as f:
+                # Use root path for simplicity
+                file_path = "idio_logic.html"
+                
+                with open(file_path, "r", encoding="utf-8") as f:
                     html_content = f.read()
                 st.components.v1.html(html_content, height=600, scrolling=True)
                 
@@ -1503,6 +1506,8 @@ if menu == "💎 Earnings Event Trading":
                     file_name="idio_score_logic.html",
                     mime="text/html"
                 )
+            except FileNotFoundError:
+                st.error("⚠️ `idio_logic.html` 파일을 찾을 수 없습니다. `app.py`와 같은 폴더에 파일을 업로드해주세요.")
             except Exception as e:
                 st.error(f"문서 로드 실패: {e}")
 
