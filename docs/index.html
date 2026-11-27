@@ -1,0 +1,132 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Huisu Namgung</title>
+  <meta name="description" content="Huisu Namgung — the stories behind the application: what I built, why I asked the questions I did, and where I want to go next.">
+  <meta property="og:title" content="Huisu Namgung">
+  <meta property="og:description" content="The stories that didn't fit in my SOP, PS, or CV.">
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;600&family=Source+Serif+4:ital,wght@0,400;0,600;1,400&display=swap" rel="stylesheet">
+  <link rel="stylesheet" href="style.css">
+</head>
+<body>
+
+<nav class="top">
+  <div class="wrap">
+    <a class="name" href="#">Huisu Namgung</a>
+    <ul>
+      <li><a href="#stories">Stories</a></li>
+      <li><a href="#work">Work</a></li>
+      <li class="hide-sm"><a href="#path">Path</a></li>
+      <li><a href="#contact">Contact</a></li>
+    </ul>
+  </div>
+</nav>
+
+<main class="wrap">
+
+  <header class="hero">
+    <p class="eyebrow">Applicant · Fall 2027 <span class="todo">TODO: 지원 학기/분야</span></p>
+    <h1>I build tools to answer questions I can't stop asking about markets.</h1>
+    <p class="lede">
+      <span class="todo">TODO</span> 한두 문장으로 "나는 어떤 사람인가"를 적어주세요.
+      CV가 '무엇을 했는가'라면, 이 사이트는 '왜 그렇게 했는가'에 대한 이야기입니다.
+    </p>
+    <div class="links">
+      <a href="cv.pdf">CV (PDF)</a>
+      <a href="https://github.com/sou234">GitHub</a>
+      <a href="mailto:you@example.com">Email</a>
+      <a href="https://scholar.google.com/">Google Scholar</a>
+    </div>
+  </header>
+
+  <!-- ───────── STORIES: 이 사이트의 핵심. SOP/PS/CV에 못 담은 이야기 ───────── -->
+  <section id="stories">
+    <h2>Stories that didn't fit in the essays</h2>
+    <ul class="stories">
+      <li>
+        <a class="card" href="stories/residuals.html">
+          <div class="meta">Research curiosity · 6 min read</div>
+          <h3>What's left after you subtract the market</h3>
+          <p>Why I spent a year chasing the residual — the part of a stock's move that no factor model explains.</p>
+        </a>
+      </li>
+      <li>
+        <a class="card" href="stories/_template.html">
+          <div class="meta"><span class="todo">TODO</span> Turning point · 5 min read</div>
+          <h3>The failure that changed my direction</h3>
+          <p>실패했던 경험, 그리고 그 뒤에 무엇을 다르게 하게 되었는지.</p>
+        </a>
+      </li>
+      <li>
+        <a class="card" href="stories/_template.html">
+          <div class="meta"><span class="todo">TODO</span> Outside the classroom · 4 min read</div>
+          <h3>A story about people, not models</h3>
+          <p>함께 일한 사람, 가르친 경험, 공동체 — 학업 외의 나를 보여주는 이야기.</p>
+        </a>
+      </li>
+    </ul>
+  </section>
+
+  <!-- ───────── WORK ───────── -->
+  <section id="work">
+    <h2>Selected work</h2>
+
+    <div class="project">
+      <h3>AI-Driven Investment System</h3>
+      <ul class="tags">
+        <li>Python</li><li>Streamlit</li><li>Factor models</li><li>Web crawling</li><li>Active ETF analysis</li>
+      </ul>
+      <p class="question">Can we separate what a manager <em>intends</em> from what the market simply does to their portfolio?</p>
+      <p>
+        A single dashboard that moves from macro trends to single-stock alpha to competitor behavior.
+        It strips market, sector, size, value and momentum effects out of earnings-day returns with a
+        5-factor regression to isolate the residual, and it tracks top active-ETF managers daily,
+        separating deliberate rebalancing (intent) from passive price drift.
+      </p>
+      <p><span class="todo">TODO</span> 내가 맡은 역할, 가장 어려웠던 부분, 결과(숫자가 있으면 좋음), 그리고 이 프로젝트가 대학원에서 연구하고 싶은 주제와 어떻게 연결되는지.</p>
+      <p class="more">
+        <a href="stories/residuals.html">Read the story behind it →</a> ·
+        <a href="https://github.com/sou234/ver3">Code</a>
+      </p>
+    </div>
+
+    <div class="project">
+      <h3><span class="todo">TODO</span> Second project</h3>
+      <ul class="tags"><li>Tag</li><li>Tag</li></ul>
+      <p class="question">이 프로젝트가 답하려던 질문 한 문장.</p>
+      <p>무엇을, 어떻게 했고, 무엇을 배웠는지.</p>
+    </div>
+  </section>
+
+  <!-- ───────── PATH ───────── -->
+  <section id="path">
+    <h2>The path so far</h2>
+    <ul class="timeline">
+      <li><span class="when">2026 —</span><span><span class="todo">TODO</span> 현재 하는 일 / 소속</span></li>
+      <li><span class="when">2025</span><span>Built the AI-Driven Investment System</span></li>
+      <li><span class="when">20XX–20XX</span><span><span class="todo">TODO</span> 학부 / 전공</span></li>
+    </ul>
+    <p style="margin-top:24px;color:var(--muted)">
+      <strong>Next:</strong> <span class="todo">TODO</span> 대학원에서 탐구하고 싶은 질문, 함께 연구하고 싶은 분야.
+    </p>
+  </section>
+
+  <section id="contact">
+    <h2>Say hello</h2>
+    <p>If you're reading this as part of my application — thank you for taking the extra time.
+       I'm happy to talk about any of these projects in more depth.</p>
+    <p><a href="mailto:you@example.com">you@example.com</a></p>
+  </section>
+
+</main>
+
+<footer>
+  <div class="wrap">© 2026 Huisu Namgung</div>
+</footer>
+
+</body>
+</html>
